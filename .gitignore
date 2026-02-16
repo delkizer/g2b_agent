@@ -1,0 +1,28 @@
+# MD 파일 Git 미추적 (README.md만 예외)
+*.md
+**/*.md
+!README.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 임시 파일
+tmp/
