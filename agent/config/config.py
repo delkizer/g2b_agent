@@ -54,6 +54,11 @@ class Config:
     def ec2_api_key(self) -> str:
         return self.env('EC2_API_KEY')
 
+    # === Database ===
+    @property
+    def database_url(self) -> str:
+        return self.env('DATABASE_URL', default='postgresql://localhost:5432/spotv')
+
     # === 키워드 필터 ===
     # 키워드 목록은 Config에서 관리하지 않는다.
     # Phase 1: KeywordFilter 클래스 내 DEFAULT_* 상수 사용

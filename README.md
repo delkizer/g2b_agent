@@ -128,9 +128,9 @@ npm run dev
 
 | 점수 | 의미 | 표시 |
 |------|------|------|
-| 80-100 | 매우 적합 (즉시 검토) | ������ |
-| 60-79 | 적합 가능 (검토 필요) | ������ |
-| 40-59 | 부분 관련 | ������ |
+| 80-100 | 매우 적합 (즉시 검토) | ������ |
+| 60-79 | 적합 가능 (검토 필요) | ������ |
+| 40-59 | 부분 관련 | ������ |
 | 0-39 | 관련도 낮음 | ⚪ |
 
 ## 설계 문서
@@ -139,7 +139,7 @@ npm run dev
 
 | 도메인 | 문서 |
 |--------|------|
-| 전체 | [AGENT-CONTEXT.md](AGENT-CONTEXT.md) |
+| 전체 | [CLAUDE.md](CLAUDE.md) |
 | 수집 | [docs/collector/01-collector-overview.md](docs/collector/01-collector-overview.md) |
 | 분석 | [docs/analyzer/01-analyzer-overview.md](docs/analyzer/01-analyzer-overview.md) |
 | 서버 | [docs/server/01-server-overview.md](docs/server/01-server-overview.md) |
