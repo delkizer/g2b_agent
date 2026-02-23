@@ -79,11 +79,11 @@ class PipelineRunner:
         return {"status": "accepted", "saved": saved, "skipped": skipped}
 
     async def send(self, bid_notice_nos: list[str] | None = None) -> dict:
-        """EC2 전송 — analyzed 건을 EC2로 전송
+        """EC2 전송 — analyzed 건을 건별로 EC2로 전송
 
         Args:
             bid_notice_nos: 전송 대상 공고번호 리스트.
-                           빈 리스트면 analyzed 전체 배치 전송.
+                           빈 리스트면 analyzed 전체 전송.
 
         Returns:
             {"status": "completed", "sent": N, "failed": N, "errors": [...]}
@@ -91,7 +91,6 @@ class PipelineRunner:
         conn = await asyncpg.connect(self.config.database_url)
         try:
             if bid_notice_nos:
-                # 지정된 건만 조회
                 items = []
                 all_analyzed = await repository.fetch_by_status(conn, "analyzed")
                 for item in all_analyzed:
@@ -103,9 +102,19 @@ class PipelineRunner:
             if not items:
                 return {"status": "no_items", "sent": 0, "failed": 0, "errors": []}
 
-            sent_count = await self._send_batch(conn, items)
-            failed_count = len(items) - sent_count
+            logger.info(f"EC2 건별 전송 시작: {len(items)}건")
+            sent_count = 0
+            failed_count = 0
 
+            for item in items:
+                analysis_result = item.get("analysis_result") or {}
+                success = await self._send_one(conn, item, analysis_result)
+                if success:
+                    sent_count += 1
+                else:
+                    failed_count += 1
+
+            logger.info(f"EC2 전송 완료: sent={sent_count}, failed={failed_count}")
             return {
                 "status": "completed",
                 "sent": sent_count,
@@ -313,20 +322,18 @@ class PipelineRunner:
             )
             return False
 
+    SEND_BATCH_SIZE = 20  # 청크당 최대 건수
+
     async def _send_batch(self, conn, analyzed_items: list[dict]) -> int:
         """배치 EC2 전송 (send() 공개 메서드에서 호출)
+
+        SEND_BATCH_SIZE 단위로 청크 분할하여 전송한다.
 
         Returns:
             전송 성공 건수
         """
         if not analyzed_items:
             return 0
-
-        payloads = []
-        for item in analyzed_items:
-            analysis_result = item.get("analysis_result") or {}
-            payload = self._build_payload(item, analysis_result)
-            payloads.append(payload)
 
         bid_nos = [item["bid_notice_no"] for item in analyzed_items]
         await conn.execute(
@@ -337,6 +344,23 @@ class PipelineRunner:
             """,
             bid_nos,
         )
+
+        total_sent = 0
+
+        for i in range(0, len(analyzed_items), self.SEND_BATCH_SIZE):
+            chunk = analyzed_items[i:i + self.SEND_BATCH_SIZE]
+            sent = await self._send_chunk(conn, chunk)
+            total_sent += sent
+
+        return total_sent
+
+    async def _send_chunk(self, conn, chunk: list[dict]) -> int:
+        """청크 단위 EC2 전송"""
+        payloads = []
+        for item in chunk:
+            analysis_result = item.get("analysis_result") or {}
+            payload = self._build_payload(item, analysis_result)
+            payloads.append(payload)
 
         now = datetime.now(timezone.utc)
         sent_count = 0
@@ -355,7 +379,7 @@ class PipelineRunner:
             errors = response_body.get("errors", [])
 
             if not errors:
-                for item in analyzed_items:
+                for item in chunk:
                     await repository.update_status(conn, item["bid_notice_no"], {
                         "pipeline_status": "sent",
                         "sent_at": now,
@@ -364,7 +388,7 @@ class PipelineRunner:
                     sent_count += 1
             else:
                 error_nos = {e["bid_notice_no"] for e in errors}
-                for item in analyzed_items:
+                for item in chunk:
                     if item["bid_notice_no"] in error_nos:
                         await repository.update_status(conn, item["bid_notice_no"], {
                             "pipeline_status": "send_failed",
@@ -381,8 +405,8 @@ class PipelineRunner:
 
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             error_msg = str(e)[:500]
-            logger.error(f"EC2 배치 전송 실패: {error_msg}")
-            for item in analyzed_items:
+            logger.error(f"EC2 배치 전송 실패 (청크 {len(chunk)}건): {error_msg}")
+            for item in chunk:
                 await repository.update_status(conn, item["bid_notice_no"], {
                     "pipeline_status": "send_failed",
                     "error_message": error_msg,
@@ -391,8 +415,8 @@ class PipelineRunner:
 
         except Exception as e:
             error_msg = str(e)[:500]
-            logger.error(f"EC2 배치 전송 중 예외: {error_msg}", exc_info=True)
-            for item in analyzed_items:
+            logger.error(f"EC2 배치 전송 중 예외 (청크 {len(chunk)}건): {error_msg}", exc_info=True)
+            for item in chunk:
                 await repository.update_status(conn, item["bid_notice_no"], {
                     "pipeline_status": "send_failed",
                     "error_message": error_msg,
