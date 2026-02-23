@@ -10,6 +10,8 @@
 
 import time
 
+from loguru import logger
+
 from config.config import Config
 from class_lib.collector.schemas import (
     CollectedAnnouncement,
@@ -94,9 +96,8 @@ class KeywordFilter:
         "데이터 분석 플랫폼", "데이터 시각화", "데이터 수집 분석",
     ]
 
-    def __init__(self, logger):
+    def __init__(self):
         self.config = Config()
-        self.logger = logger
         self._load_keywords()
 
     def _load_keywords(self) -> None:
@@ -135,7 +136,7 @@ class KeywordFilter:
         self._normalized_exclusion = [self._normalize(k) for k in self._exclusion_keywords]
         self._normalized_compound = [self._normalize(k) for k in self._compound_keywords]
 
-        self.logger.info(
+        logger.info(
             f"KeywordFilter 로드 완료: "
             f"1차={len(self._primary_keywords)}, "
             f"2차={len(self._secondary_keywords)}, "
@@ -180,7 +181,7 @@ class KeywordFilter:
 
         elapsed = time.perf_counter() - start
 
-        self.logger.info(
+        logger.info(
             f"KeywordFilter 결과: "
             f"전체={stats['total']}, "
             f"통과={stats['passed']}, "

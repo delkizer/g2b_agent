@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 import asyncpg
 import httpx
+from loguru import logger
 
 from config.config import Config
 from class_lib.collector.schemas import (
@@ -44,9 +45,8 @@ class G2BService:
     NON_RETRYABLE_CODES = {"06", "07", "08", "10", "11", "12", "20", "30", "31", "32"}
     NODATA_CODE = "03"
 
-    def __init__(self, logger):
+    def __init__(self):
         self.config = Config()
-        self.logger = logger
         self.base_url = f"{self.config.g2b_api_base_url}/ao/PubDataOpnStdService"
         self.api_key = self.config.g2b_api_key
         self.db_url = self.config.database_url
@@ -71,7 +71,7 @@ class G2BService:
         Returns:
             CollectedAnnouncement 리스트
         """
-        self.logger.info(
+        logger.info(
             f"나라장터 API 호출 시작: {start_dt.strftime('%Y-%m-%d %H:%M')} ~ "
             f"{end_dt.strftime('%Y-%m-%d %H:%M')}"
         )
@@ -94,14 +94,14 @@ class G2BService:
                     map_item_to_announcement(item) for item in items
                 ]
 
-                self.logger.info(f"수집 완료: {len(announcements)}건")
+                logger.info(f"수집 완료: {len(announcements)}건")
                 return announcements
 
         except G2BApiError as e:
-            self.logger.error(f"G2B API 에러: {e}")
+            logger.error(f"G2B API 에러: {e}")
             return []
         except Exception as e:
-            self.logger.error(f"수집 중 예외 발생: {e}", exc_info=True)
+            logger.error(f"수집 중 예외 발생: {e}", exc_info=True)
             return []
 
     async def _call_api(
@@ -144,22 +144,22 @@ class G2BService:
 
                 # 데이터 없음 (정상)
                 if result_code == self.NODATA_CODE:
-                    self.logger.info("조회 결과 없음 (NODATA)")
+                    logger.info("조회 결과 없음 (NODATA)")
                     return {"items": [], "totalCount": 0}
 
                 # 재시도 불필요한 에러
                 if result_code in self.NON_RETRYABLE_CODES:
-                    self.logger.error(f"G2B API 에러 [{result_code}]: {result_msg}")
+                    logger.error(f"G2B API 에러 [{result_code}]: {result_msg}")
                     raise G2BApiError(result_code, result_msg)
 
                 # 재시도 가능 에러
-                self.logger.warning(
+                logger.warning(
                     f"G2B API 재시도 가능 에러 [{result_code}]: {result_msg} "
                     f"(시도 {attempt + 1}/{max_retries})"
                 )
 
             except httpx.HTTPStatusError as e:
-                self.logger.warning(
+                logger.warning(
                     f"HTTP 에러 {e.response.status_code} "
                     f"(시도 {attempt + 1}/{max_retries})"
                 )
@@ -168,18 +168,18 @@ class G2BService:
                     raise G2BApiError(str(e.response.status_code), str(e))
 
             except httpx.RequestError as e:
-                self.logger.warning(
+                logger.warning(
                     f"요청 에러: {e} (시도 {attempt + 1}/{max_retries})"
                 )
 
             # 지수 백오프 대기 (1초, 2초, 4초)
             if attempt < max_retries - 1:
                 wait_seconds = 2 ** attempt
-                self.logger.info(f"{wait_seconds}초 후 재시도...")
+                logger.info(f"{wait_seconds}초 후 재시도...")
                 await asyncio.sleep(wait_seconds)
 
         # 최대 재시도 초과 - Graceful Degradation (빈 리스트 반환)
-        self.logger.error(f"G2B API 호출 실패 (최대 재시도 {max_retries}회 초과)")
+        logger.error(f"G2B API 호출 실패 (최대 재시도 {max_retries}회 초과)")
         return {"items": [], "totalCount": 0}
 
     async def _fetch_all_pages(
@@ -212,7 +212,7 @@ class G2BService:
                 "numOfRows": num_of_rows,
             }
 
-            self.logger.debug(f"페이지 {page_no} 조회 중...")
+            logger.debug(f"페이지 {page_no} 조회 중...")
             body = await self._call_api(client, url, request_params)
 
             items_raw = body.get("items")
@@ -299,7 +299,7 @@ class G2BService:
             finally:
                 await conn.close()
         except Exception as e:
-            self.logger.warning(f"수집 이력 조회 실패: {e}")
+            logger.warning(f"수집 이력 조회 실패: {e}")
             return None
 
     async def save_history(self, history: CollectorHistory) -> None:
@@ -330,11 +330,11 @@ class G2BService:
                     history.status,
                     history.error_message,
                 )
-                self.logger.debug(f"수집 이력 저장 완료: {history.operation}")
+                logger.debug(f"수집 이력 저장 완료: {history.operation}")
             finally:
                 await conn.close()
         except Exception as e:
-            self.logger.error(f"수집 이력 저장 실패: {e}", exc_info=True)
+            logger.error(f"수집 이력 저장 실패: {e}", exc_info=True)
 
     async def ensure_tables(self) -> None:
         """테이블 생성 (IF NOT EXISTS)
@@ -365,11 +365,11 @@ class G2BService:
                     """
                 )
 
-                self.logger.info("DB 테이블 확인 완료 (g2b.collector_history)")
+                logger.info("DB 테이블 확인 완료 (g2b.collector_history)")
             finally:
                 await conn.close()
         except Exception as e:
-            self.logger.error(f"테이블 생성 실패: {e}", exc_info=True)
+            logger.error(f"테이블 생성 실패: {e}", exc_info=True)
 
 
 # ============================================================

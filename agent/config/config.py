@@ -45,6 +45,11 @@ class Config:
     def schedule_interval_minutes(self) -> int:
         return self.env.int('SCHEDULE_INTERVAL', default=60)
 
+    # === 내부 API (로컬 FastAPI) ===
+    @property
+    def internal_api_base_url(self) -> str:
+        return self.env('INTERNAL_API_BASE_URL', default='http://127.0.0.1:8100')
+
     # === EC2 서버 ===
     @property
     def ec2_api_url(self) -> str:

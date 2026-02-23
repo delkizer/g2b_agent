@@ -12,8 +12,10 @@ APScheduler로 수집 주기를 관리하고 G2BService + KeywordFilter를 오�
 import time
 from datetime import datetime, timedelta
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
+from loguru import logger
 
 from config.config import Config
 from class_lib.collector.g2b_service import G2BService
@@ -40,19 +42,18 @@ class CollectorScheduler:
     OPERATION = "bid_announcement"
     DEFAULT_LOOKBACK_HOURS = 24
 
-    def __init__(self, logger):
+    def __init__(self):
         self.config = Config()
-        self.logger = logger
 
         # APScheduler (MemoryJobStore — SQLAlchemy 의존 제거)
         jobstores = {"default": MemoryJobStore()}
         self.scheduler = AsyncIOScheduler(jobstores=jobstores)
 
         # 서비스 인스턴스
-        self.g2b_service = G2BService(logger)
-        self.keyword_filter = KeywordFilter(logger)
+        self.g2b_service = G2BService()
+        self.keyword_filter = KeywordFilter()
 
-        self.logger.info(
+        logger.info(
             f"CollectorScheduler 초기화 완료 "
             f"(수집 주기: {self.config.schedule_interval_minutes}분)"
         )
@@ -79,7 +80,7 @@ class CollectorScheduler:
         start_dt = last_dt if last_dt else (now - timedelta(hours=self.DEFAULT_LOOKBACK_HOURS))
         end_dt = now
 
-        self.logger.info(
+        logger.info(
             f"수집 시작: {start_dt.strftime('%Y-%m-%d %H:%M')} ~ "
             f"{end_dt.strftime('%Y-%m-%d %H:%M')} "
             f"({'이력 기반' if last_dt else '최초 실행 (24h 전부터)'})"
@@ -108,11 +109,15 @@ class CollectorScheduler:
             )
             await self.g2b_service.save_history(history)
 
-            self.logger.info(
+            logger.info(
                 f"수집 완료: 전체={len(announcements)}건, "
                 f"필터 통과={len(filtered)}건, "
                 f"{elapsed_ms}ms 소요"
             )
+
+            # Pipeline에 데이터 전달 (DB 저장은 PipelineRunner가 수행)
+            if filtered:
+                await self._signal_pipeline(filtered)
 
             return filtered
 
@@ -120,7 +125,7 @@ class CollectorScheduler:
             # Graceful Degradation: 예외 전파하지 않음
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
 
-            self.logger.error(f"수집/필터 중 예외 발생: {e}", exc_info=True)
+            logger.error(f"수집/필터 중 예외 발생: {e}", exc_info=True)
 
             # 이력 기록 (실패)
             history = CollectorHistory(
@@ -146,7 +151,7 @@ class CollectorScheduler:
         Returns:
             필터 통과 공고 리스트
         """
-        self.logger.info("수동 수집 실행 (run_once)")
+        logger.info("수동 수집 실행 (run_once)")
         return await self.collect_and_filter()
 
     def start(self) -> None:
@@ -164,7 +169,7 @@ class CollectorScheduler:
             replace_existing=True,
         )
         self.scheduler.start()
-        self.logger.info(
+        logger.info(
             f"CollectorScheduler 시작 "
             f"(주기: {self.config.schedule_interval_minutes}분)"
         )
@@ -175,7 +180,41 @@ class CollectorScheduler:
         실행 중인 모든 Job을 중지하고 스케줄러를 종료한다.
         """
         self.scheduler.shutdown(wait=False)
-        self.logger.info("CollectorScheduler 중지 완료")
+        logger.info("CollectorScheduler 중지 완료")
+
+    # ─── Pipeline 연동 ────────────────────────────────────
+
+    async def _signal_pipeline(self, filtered: list[FilteredAnnouncement]) -> None:
+        """PipelineRunner에 필터 통과 공고 전달
+
+        POST /api/internal/pipeline/run
+        Body: { "announcements": [FilteredAnnouncement, ...] }
+        타임아웃: 300초 (배치 전체 분석 + EC2 전송 시간 고려)
+
+        실패 시: 로그 경고만 남김 (Graceful Degradation)
+        다음 스케줄에서 PipelineRunner가 기존 collected 건을 재처리.
+        """
+        url = f"{self.config.internal_api_base_url}/api/internal/pipeline/run"
+        payload = {
+            "announcements": [ann.model_dump(mode="json") for ann in filtered]
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload, timeout=300.0)
+                result = response.json()
+                logger.info(
+                    f"Pipeline 전달 완료: status={result.get('status')}, "
+                    f"saved={result.get('saved', 0)}, "
+                    f"analyzed={result.get('analyzed', 0)}, "
+                    f"sent={result.get('sent', 0)}"
+                )
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Pipeline API HTTP 에러 ({e.response.status_code}): {e}")
+        except httpx.RequestError as e:
+            logger.warning(f"Pipeline API 요청 실패: {e}")
+        except Exception as e:
+            logger.warning(f"Pipeline 전달 중 예외: {e}")
 
     # ─── 초기화 헬퍼 ──────────────────────────────────────
 

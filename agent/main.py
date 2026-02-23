@@ -1,14 +1,28 @@
-from config.config import Config
+"""에이전트 진입점 (uvicorn)
+
+uvicorn으로 FastAPI 서버를 시작한다.
+loguru 설정은 server.py lifespan에서 수행하므로 여기서는 호출하지 않는다.
+
+사용법:
+    cd agent/
+    python main.py
+
+참조:
+- docs/pipeline/04-entry-point.md §2.4 : lifespan 방식 진입점
+- agent/server.py : FastAPI 앱 + lifespan (setup_logger 포함)
+"""
+
+import uvicorn
+
 
 def main():
-    config = Config()
-    print("=== Agent Config 검증 ===")
-    print(f"G2B API Base URL: {config.g2b_api_base_url}")
-    print(f"Claude Model: {config.claude_model}")
-    print(f"Claude Max Tokens: {config.claude_max_tokens}")
-    print(f"Schedule Interval: {config.schedule_interval_minutes}분")
-    print(f"EC2 API URL: {config.ec2_api_url}")
-    print("=== Config 로드 성공! ===")
+    uvicorn.run(
+        "server:app",
+        host="127.0.0.1",
+        port=8100,
+        log_level="warning",
+    )
+
 
 if __name__ == "__main__":
     main()

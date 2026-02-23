@@ -24,5 +24,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Logs
+agent/logs/
+
 # 임시 파일
 tmp/
