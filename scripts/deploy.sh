@@ -62,6 +62,11 @@ echo "소스 코드 최신화 중..."
 cd ~/work/g2b_agent
 git pull origin main
 
+# Server 의존성 설치
+echo "Server 의존성 설치 중..."
+cd ~/work/g2b_agent/server
+.venv/bin/pip install -q -r requirements.txt
+
 # Frontend 빌드
 echo "Frontend 빌드 시작..."
 cd ~/work/g2b_agent/frontend
