@@ -3,6 +3,9 @@
 서버 시작 시 setup_logger()를 1회 호출한다.
 각 모듈에서는 `from loguru import logger`로 직접 사용.
 
+uvicorn/fastapi 내부 로거도 loguru로 통합하여
+모든 로그(에러 traceback 포함)가 파일에 기록된다.
+
 사용법:
     # main.py (엔트리포인트)
     from config.logger import setup_logger
@@ -13,6 +16,7 @@
     logger.info("메시지")
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -20,6 +24,23 @@ from loguru import logger
 
 
 LOG_DIR = Path.home() / "work" / "logs" / "g2b_server"
+
+
+class _InterceptHandler(logging.Handler):
+    """표준 logging → loguru 리다이렉트 핸들러"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def setup_logger(level: str = "DEBUG", log_dir: Path | str | None = None) -> None:
@@ -55,3 +76,9 @@ def setup_logger(level: str = "DEBUG", log_dir: Path | str | None = None) -> Non
         retention="30 days",
         encoding="utf-8",
     )
+
+    # uvicorn/fastapi 로거 → loguru 통합
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
+        target = logging.getLogger(name)
+        target.handlers = [_InterceptHandler()]
+        target.propagate = False
