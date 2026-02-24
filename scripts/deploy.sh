@@ -34,6 +34,29 @@ fi
 echo "배포 대상 디렉토리: $TARGET_DIR"
 echo ""
 
+# 환경 사전 준비
+echo "환경 사전 준비 중..."
+
+# 로그 디렉토리 보장
+mkdir -p ~/work/logs/g2b_server
+echo "  - 로그 디렉토리 확인: ~/work/logs/g2b_server"
+
+# RSA 키 자동 생성 (없으면)
+KEY_DIR=~/work/g2b_agent/server/server_env/rsa256
+if [ ! -f "$KEY_DIR/private_key.pem" ]; then
+    echo "  - RSA 키 생성 중..."
+    mkdir -p "$KEY_DIR"
+    openssl genrsa -out "$KEY_DIR/private_key.pem" 2048
+    openssl rsa -in "$KEY_DIR/private_key.pem" -pubout -out "$KEY_DIR/public_key.pem"
+    chmod 600 "$KEY_DIR/private_key.pem"
+    chmod 644 "$KEY_DIR/public_key.pem"
+    echo "  - RSA 키 생성 완료: $KEY_DIR"
+else
+    echo "  - RSA 키 존재 확인: $KEY_DIR"
+fi
+
+echo ""
+
 # 소스 최신화
 echo "소스 코드 최신화 중..."
 cd ~/work/g2b_agent
