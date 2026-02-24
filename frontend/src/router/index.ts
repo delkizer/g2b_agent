@@ -1,18 +1,30 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DefaultLayout from '@/layouts/DefaultLayout.vue'
+import { useAuthStore } from '@/stores/auth'
 
 declare module 'vue-router' {
   interface RouteMeta {
     title?: string
     icon?: string
     showInMenu?: boolean
+    requiresAuth?: boolean
   }
 }
 
 const routes: RouteRecordRaw[] = [
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/pages/LoginPage.vue'),
+    meta: {
+      title: '로그인',
+      requiresAuth: false,
+    },
+  },
+  {
     path: '/',
     component: DefaultLayout,
+    meta: { requiresAuth: true },
     children: [
       {
         path: '',
@@ -79,10 +91,47 @@ const router = createRouter({
   },
 })
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const pageTitle = to.meta.title
   document.title = pageTitle ? `${pageTitle} | ${APP_NAME}` : APP_NAME
-  next()
+
+  const auth = useAuthStore()
+
+  // requiresAuth가 명시적으로 false인 경우 (로그인 페이지)
+  if (to.meta.requiresAuth === false) {
+    if (auth.isLoggedIn) {
+      return next('/')
+    }
+    return next()
+  }
+
+  // 인증 필요한 페이지 — 부모 라우트의 meta도 확인
+  const needsAuth = to.matched.some((record) => record.meta.requiresAuth !== false)
+  if (!needsAuth) {
+    return next()
+  }
+
+  // 이미 로그인된 상태
+  if (auth.isLoggedIn) {
+    return next()
+  }
+
+  // fetchCurrentUser로 세션 확인 (쿠키 기반)
+  const ok = await auth.fetchCurrentUser()
+  if (ok) {
+    return next()
+  }
+
+  // refresh 시도
+  if (!auth.refreshTried) {
+    auth.refreshTried = true
+    const refreshed = await auth.refreshTokens()
+    if (refreshed) {
+      return next()
+    }
+  }
+
+  return next('/login')
 })
 
 export default router

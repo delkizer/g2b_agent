@@ -9,6 +9,7 @@ interface ApiErrorResponse {
 const apiClient: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 30_000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -25,13 +26,28 @@ apiClient.interceptors.request.use(
   (error: AxiosError) => Promise.reject(error),
 )
 
-// 응답 인터셉터
+// 응답 인터셉터 — 401 시 refresh 시도
+let isRefreshing = false
+let failedQueue: Array<{ resolve: (v: any) => void; reject: (e: any) => void }> = []
+
+function processQueue(error: any) {
+  failedQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error)
+    } else {
+      prom.resolve(undefined)
+    }
+  })
+  failedQueue = []
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<ApiErrorResponse>) => {
+  async (error: AxiosError<ApiErrorResponse>) => {
     const { toast } = useToast()
     const status = error.response?.status
     const errorData = error.response?.data
+    const originalRequest = error.config
 
     if (!error.response) {
       if (error.code === 'ECONNABORTED') {
@@ -42,12 +58,35 @@ apiClient.interceptors.response.use(
       return Promise.reject(error)
     }
 
+    // 401 → refresh 시도 (login/refresh 요청 자체가 401이면 스킵)
+    if (status === 401 && originalRequest && !originalRequest.url?.includes('/auth/login') && !originalRequest.url?.includes('/auth/refresh')) {
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject })
+        }).then(() => apiClient(originalRequest!))
+      }
+
+      isRefreshing = true
+      try {
+        await apiClient.post('/auth/refresh')
+        processQueue(null)
+        return apiClient(originalRequest!)
+      } catch (refreshError) {
+        processQueue(refreshError)
+        localStorage.removeItem('access_token')
+        window.location.href = '/login'
+        return Promise.reject(refreshError)
+      } finally {
+        isRefreshing = false
+      }
+    }
+
     switch (status) {
       case 400:
         toast.warning(errorData?.detail || '잘못된 요청입니다.')
         break
       case 401:
-        toast.error('인증에 실패했습니다.')
+        // login/refresh 실패 — toast 생략 (LoginPage에서 처리)
         break
       case 403:
         toast.error('접근 권한이 없습니다.')

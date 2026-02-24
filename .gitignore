@@ -24,6 +24,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# RSA keys
+server/server_env/
+
 # Logs
 agent/logs/
 

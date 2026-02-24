@@ -39,6 +39,27 @@ class Config:
     def internal_api_key(self) -> str:
         return self.env('INTERNAL_API_KEY')
 
+    # === JWT ===
+    @property
+    def jwt_key_path(self) -> Path:
+        return Path(self.env('JWT_KEY_PATH', default=str(self.BASE_DIR / 'server_env' / 'rsa256')))
+
+    @property
+    def jwt_expire_minutes(self) -> int:
+        return self.env.int('JWT_EXPIRE_MINUTES', default=60)
+
+    @property
+    def jwt_sub(self) -> str:
+        return self.env('JWT_SUB', default='g2b')
+
+    @property
+    def set_cookie_secure(self) -> bool:
+        return self.env.bool('SET_COOKIE_SECURE', default=False)
+
+    @property
+    def set_cookie_samesite(self) -> str:
+        return self.env('SET_COOKIE_SAMESITE', default='lax')
+
     # === Notion ===
     @property
     def notion_enabled(self) -> bool:

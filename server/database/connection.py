@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from config.config import Config
 from models.announcement import Base
+from models.user import User  # noqa: F401
 
 
 _engine = None
