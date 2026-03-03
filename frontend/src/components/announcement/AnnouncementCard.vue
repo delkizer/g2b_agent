@@ -16,9 +16,44 @@ const formattedPrice = computed(() => {
   return new Intl.NumberFormat('ko-KR').format(props.announcement.presmpt_price) + '원'
 })
 
-const formattedCloseDate = computed(() => {
-  if (!props.announcement.bid_close_dt) return '-'
-  return new Date(props.announcement.bid_close_dt).toLocaleDateString('ko-KR')
+const formattedBidPeriod = computed(() => {
+  const begin = props.announcement.bid_begin_dt
+  const close = props.announcement.bid_close_dt
+  if (!begin && !close) return '-'
+
+  const fmt = (dt: string) => {
+    const d = new Date(dt)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }
+
+  if (begin && close) return `${fmt(begin)} ~ ${fmt(close)}`
+  if (!begin && close) return `~ ${fmt(close)}`
+  return `${fmt(begin!)} ~`
+})
+
+const dDayText = computed(() => {
+  if (!props.announcement.bid_close_dt) return ''
+  const now = new Date()
+  const close = new Date(props.announcement.bid_close_dt)
+  const diffMs = close.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) return '마감'
+  if (diffDays === 0) return 'D-Day'
+  return `D-${diffDays}`
+})
+
+const dDayColor = computed(() => {
+  if (!props.announcement.bid_close_dt) return ''
+  const now = new Date()
+  const close = new Date(props.announcement.bid_close_dt)
+  const diffMs = close.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) return 'text-gray-400'
+  if (diffDays <= 3) return 'text-red-600 font-semibold'
+  if (diffDays <= 7) return 'text-orange-500 font-medium'
+  return 'text-blue-600'
 })
 
 function goToDetail() {
@@ -51,7 +86,8 @@ function goToDetail() {
 
     <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
       <CategoryTag v-if="announcement.category" :category="announcement.category" />
-      <span>마감: {{ formattedCloseDate }}</span>
+      <span>입찰: {{ formattedBidPeriod }}</span>
+      <span v-if="dDayText" :class="dDayColor">{{ dDayText }}</span>
       <span>예산: {{ formattedPrice }}</span>
     </div>
   </div>

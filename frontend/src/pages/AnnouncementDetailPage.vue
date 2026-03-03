@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAnnouncementDetail } from '@/composables/useAnnouncementDetail'
 import type { AnnouncementStatus } from '@/types'
@@ -54,6 +54,31 @@ function dimensionBarColor(score: number): string {
   if (score >= 40) return 'bg-green-500'
   return 'bg-gray-400'
 }
+
+const dDayInfo = computed(() => {
+  if (!detail.value || !detail.value.bid_close_dt) return null
+
+  const now = new Date()
+  const closeDate = new Date(detail.value.bid_close_dt)
+  const diffMs = closeDate.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) {
+    return { text: '마감', colorClass: 'bg-gray-100 text-gray-500' }
+  }
+  if (diffDays === 0) {
+    return { text: 'D-Day', colorClass: 'bg-red-100 text-red-700' }
+  }
+
+  const text = `D-${diffDays}`
+  if (diffDays <= 3) {
+    return { text, colorClass: 'bg-red-100 text-red-700' }
+  }
+  if (diffDays <= 7) {
+    return { text, colorClass: 'bg-orange-100 text-orange-700' }
+  }
+  return { text, colorClass: 'bg-blue-100 text-blue-700' }
+})
 </script>
 
 <template>
@@ -91,6 +116,13 @@ function dimensionBarColor(score: number): string {
             <span class="font-medium text-gray-500">입찰기간:</span>
             <span class="ml-2 text-gray-900">
               {{ formatDate(detail.bid_begin_dt) }} ~ {{ formatDate(detail.bid_close_dt) }}
+            </span>
+            <span
+              v-if="dDayInfo"
+              class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
+              :class="dDayInfo.colorClass"
+            >
+              {{ dDayInfo.text }}
             </span>
           </div>
         </div>
