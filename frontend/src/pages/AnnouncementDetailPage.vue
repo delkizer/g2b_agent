@@ -56,10 +56,12 @@ function dimensionBarColor(score: number): string {
 }
 
 const dDayInfo = computed(() => {
-  if (!detail.value || !detail.value.bid_close_dt) return null
+  if (!detail.value) return null
+  const targetDt = detail.value.bid_close_dt || detail.value.openg_dt
+  if (!targetDt) return null
 
   const now = new Date()
-  const closeDate = new Date(detail.value.bid_close_dt)
+  const closeDate = new Date(targetDt)
   const diffMs = closeDate.getTime() - now.getTime()
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
 
@@ -112,7 +114,7 @@ const dDayInfo = computed(() => {
             <span class="font-medium text-gray-500">추정가격:</span>
             <span class="ml-2 text-gray-900">{{ formatPrice(detail.presmpt_price) }}</span>
           </div>
-          <div>
+          <div v-if="detail.bid_begin_dt || detail.bid_close_dt">
             <span class="font-medium text-gray-500">입찰기간:</span>
             <span class="ml-2 text-gray-900">
               {{ formatDate(detail.bid_begin_dt) }} ~ {{ formatDate(detail.bid_close_dt) }}
@@ -125,6 +127,23 @@ const dDayInfo = computed(() => {
               {{ dDayInfo.text }}
             </span>
           </div>
+          <template v-else>
+            <div v-if="detail.contract_method">
+              <span class="font-medium text-gray-500">계약방식:</span>
+              <span class="ml-2 text-gray-900">{{ detail.contract_method }}</span>
+            </div>
+            <div v-if="detail.openg_dt">
+              <span class="font-medium text-gray-500">개찰일시:</span>
+              <span class="ml-2 text-gray-900">{{ formatDate(detail.openg_dt) }}</span>
+              <span
+                v-if="dDayInfo"
+                class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
+                :class="dDayInfo.colorClass"
+              >
+                {{ dDayInfo.text }}
+              </span>
+            </div>
+          </template>
         </div>
 
         <a

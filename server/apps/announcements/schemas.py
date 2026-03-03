@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field, field_validator
 
 # ── 배치 전송 ────────────────────────────────────────────
 
-ALLOWED_CATEGORIES = {"스포츠", "영상분석", "AI/데이터", "미디어", "플랫폼", "기타"}
 ALLOWED_STATUSES = {"pending", "analyzed", "reviewing", "bidding", "excluded", "archived"}
 
 
@@ -39,13 +38,6 @@ class AnalyzedAnnouncementItem(BaseModel):
     # 시스템
     collected_at: Optional[datetime] = Field(None, description="수집 시각")
     analyzed_at: Optional[datetime] = Field(None, description="분석 완료 시각")
-
-    @field_validator("category")
-    @classmethod
-    def validate_category(cls, v):
-        if v is not None and v not in ALLOWED_CATEGORIES:
-            raise ValueError(f"category 값이 유효하지 않습니다: '{v}'")
-        return v
 
 
 class AnnouncementBatchRequest(BaseModel):
@@ -88,6 +80,8 @@ class AnnouncementListItem(BaseModel):
     presmpt_price: Optional[int] = None
     bid_begin_dt: Optional[datetime] = None
     bid_close_dt: Optional[datetime] = None
+    contract_method: Optional[str] = None
+    openg_dt: Optional[datetime] = None
     status: str = "pending"
     needs_research_lab: bool = False
     collected_at: Optional[datetime] = None
@@ -117,6 +111,8 @@ class AnnouncementDetailResponse(BaseModel):
     presmpt_price: Optional[int] = None
     bid_begin_dt: Optional[datetime] = None
     bid_close_dt: Optional[datetime] = None
+    contract_method: Optional[str] = None
+    openg_dt: Optional[datetime] = None
     link_url: Optional[str] = None
     raw_data: Optional[dict] = None
 
@@ -203,11 +199,7 @@ class FilterParams(BaseModel):
         """콤마 구분 category 문자열을 리스트로 변환"""
         if self.category is None:
             return None
-        categories = [c.strip() for c in self.category.split(",") if c.strip()]
-        for cat in categories:
-            if cat not in ALLOWED_CATEGORIES:
-                raise ValueError(f"category 값이 유효하지 않습니다: '{cat}'")
-        return categories
+        return [c.strip() for c in self.category.split(",") if c.strip()]
 
 
 # ── 상태 변경 ────────────────────────────────────────────

@@ -19,7 +19,7 @@ const formattedPrice = computed(() => {
 const formattedBidPeriod = computed(() => {
   const begin = props.announcement.bid_begin_dt
   const close = props.announcement.bid_close_dt
-  if (!begin && !close) return '-'
+  if (!begin && !close) return ''
 
   const fmt = (dt: string) => {
     const d = new Date(dt)
@@ -31,10 +31,26 @@ const formattedBidPeriod = computed(() => {
   return `${fmt(begin!)} ~`
 })
 
+const contractMethodLabel = computed(() => {
+  if (props.announcement.contract_method && !props.announcement.bid_begin_dt && !props.announcement.bid_close_dt) {
+    return props.announcement.contract_method
+  }
+  return ''
+})
+
+const formattedOpengDate = computed(() => {
+  if (!props.announcement.bid_begin_dt && !props.announcement.bid_close_dt && props.announcement.openg_dt) {
+    const d = new Date(props.announcement.openg_dt)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }
+  return ''
+})
+
 const dDayText = computed(() => {
-  if (!props.announcement.bid_close_dt) return ''
+  const targetDt = props.announcement.bid_close_dt || props.announcement.openg_dt
+  if (!targetDt) return ''
   const now = new Date()
-  const close = new Date(props.announcement.bid_close_dt)
+  const close = new Date(targetDt)
   const diffMs = close.getTime() - now.getTime()
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
 
@@ -44,9 +60,10 @@ const dDayText = computed(() => {
 })
 
 const dDayColor = computed(() => {
-  if (!props.announcement.bid_close_dt) return ''
+  const targetDt = props.announcement.bid_close_dt || props.announcement.openg_dt
+  if (!targetDt) return ''
   const now = new Date()
-  const close = new Date(props.announcement.bid_close_dt)
+  const close = new Date(targetDt)
   const diffMs = close.getTime() - now.getTime()
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
 
@@ -86,7 +103,13 @@ function goToDetail() {
 
     <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
       <CategoryTag v-if="announcement.category" :category="announcement.category" />
-      <span>입찰: {{ formattedBidPeriod }}</span>
+      <template v-if="formattedBidPeriod">
+        <span>입찰: {{ formattedBidPeriod }}</span>
+      </template>
+      <template v-else-if="contractMethodLabel">
+        <span class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600">{{ contractMethodLabel }}</span>
+        <span v-if="formattedOpengDate">개찰: {{ formattedOpengDate }}</span>
+      </template>
       <span v-if="dDayText" :class="dDayColor">{{ dDayText }}</span>
       <span>예산: {{ formattedPrice }}</span>
     </div>

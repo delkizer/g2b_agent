@@ -130,6 +130,12 @@ class AnnouncementService:
             Announcement.needs_research_lab,
             Announcement.collected_at,
             Announcement.created_at,
+            Announcement.raw_data['bidwinrDcsnMthdNm'].astext.label('contract_method'),
+            literal_column("""
+                CASE WHEN raw_data->>'opengDate' IS NOT NULL AND raw_data->>'opengDate' != ''
+                THEN (raw_data->>'opengDate' || 'T' || COALESCE(NULLIF(raw_data->>'opengTm', ''), '00:00') || ':00')::timestamptz
+                ELSE NULL END
+            """).label('openg_dt'),
         )
 
         count_query = select(func.count()).select_from(Announcement)
@@ -179,7 +185,20 @@ class AnnouncementService:
                 error_code="NOT_FOUND",
             )
 
-        return row
+        # ORM 인스턴스 → dict 변환 + computed 필드 추가
+        data = {c.name: getattr(row, c.name) for c in Announcement.__table__.columns}
+        raw = data.get('raw_data') or {}
+        data['contract_method'] = raw.get('bidwinrDcsnMthdNm') or None
+        openg_date = raw.get('opengDate', '')
+        openg_tm = raw.get('opengTm', '')
+        if openg_date:
+            try:
+                data['openg_dt'] = datetime.fromisoformat(f"{openg_date}T{openg_tm or '00:00'}:00")
+            except (ValueError, TypeError):
+                data['openg_dt'] = None
+        else:
+            data['openg_dt'] = None
+        return data
 
     async def get_stats(
         self,

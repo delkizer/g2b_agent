@@ -16,6 +16,8 @@ export interface components {
     AnnouncementResponse: components['schemas']['AnnouncementBase'] & {
       id: number
       raw_data?: Record<string, unknown> | null
+      contract_method?: string | null
+      openg_dt?: string | null
       category?: string | null
       relevance_score: number
       summary?: string | null
@@ -38,6 +40,8 @@ export interface components {
       presmpt_price?: number | null
       bid_begin_dt?: string | null
       bid_close_dt?: string | null
+      contract_method?: string | null
+      openg_dt?: string | null
       category?: string | null
       relevance_score: number
       summary?: string | null
