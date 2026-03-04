@@ -2,11 +2,12 @@
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.dependencies import verify_api_key
 from apps.exceptions import AppException
 from database.connection import get_session
 from services.announcement_service import AnnouncementService
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 # ── 고정 경로 (동적 {bid_notice_no}보다 먼저 선언) ─────────
 
-@router.post("/sync-all")
+@router.post("/sync-all", dependencies=[Depends(verify_api_key)])
 async def sync_all_bid_contexts(
     session: AsyncSession = Depends(get_session),
 ):
@@ -73,6 +74,25 @@ def list_attachments(bid_notice_no: str):
     }
 
 
+@router.post(
+    "/{bid_notice_no}/attachments",
+    dependencies=[Depends(verify_api_key)],
+)
+async def upload_attachments(
+    bid_notice_no: str,
+    files: list[UploadFile] = File(...),
+):
+    """첨부파일 업로드 (복수 파일)"""
+    service = FileService()
+    saved = await service.save_attachments(bid_notice_no, files)
+    logger.info(f"첨부파일 업로드: {bid_notice_no} — {len(saved)}건")
+    return {
+        "bid_notice_no": bid_notice_no,
+        "uploaded": len(saved),
+        "files": saved,
+    }
+
+
 @router.get("/{bid_notice_no}/attachments/{filename:path}")
 def download_attachment(bid_notice_no: str, filename: str):
     service = FileService()
@@ -92,6 +112,25 @@ def list_output_files(bid_notice_no: str):
     return {
         "bid_notice_no": bid_notice_no,
         "files": service.list_output_files(bid_notice_no),
+    }
+
+
+@router.post(
+    "/{bid_notice_no}/outputs",
+    dependencies=[Depends(verify_api_key)],
+)
+async def upload_output_files(
+    bid_notice_no: str,
+    files: list[UploadFile] = File(...),
+):
+    """생성 문서 업로드 (bid_context.md 등)"""
+    service = FileService()
+    saved = await service.save_output_files(bid_notice_no, files)
+    logger.info(f"생성 문서 업로드: {bid_notice_no} — {len(saved)}건")
+    return {
+        "bid_notice_no": bid_notice_no,
+        "uploaded": len(saved),
+        "files": saved,
     }
 
 
@@ -119,7 +158,7 @@ def get_bid_context(bid_notice_no: str):
     }
 
 
-@router.post("/{bid_notice_no}/sync-context")
+@router.post("/{bid_notice_no}/sync-context", dependencies=[Depends(verify_api_key)])
 async def sync_bid_context(
     bid_notice_no: str,
     session: AsyncSession = Depends(get_session),

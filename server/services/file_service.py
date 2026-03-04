@@ -1,11 +1,11 @@
-"""파일 서빙 서비스 — 첨부파일/output 파일 조회 + bid_context 읽기/파싱"""
+"""파일 서빙 서비스 — 첨부파일/output 파일 업로드/조회/다운로드 + bid_context 파싱"""
 
 import json
 import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from config.config import Config
 
@@ -82,6 +82,47 @@ class FileService:
     def get_output_file_path(self, bid_notice_no: str, filename: str) -> Path:
         return self._validate_and_resolve(
             self.config.output_base_dir, bid_notice_no, filename
+        )
+
+    async def save_files(
+        self, base_dir: str, bid_notice_no: str, files: list[UploadFile]
+    ) -> list[dict]:
+        """파일을 {base_dir}/{bid_notice_no}/ 에 저장. 저장 결과 목록 반환."""
+        directory = Path(base_dir) / bid_notice_no
+        directory.mkdir(parents=True, exist_ok=True)
+
+        saved = []
+        for upload_file in files:
+            filename = Path(upload_file.filename or "unknown").name
+            if ".." in filename or "/" in filename or "\\" in filename:
+                continue
+
+            dest = directory / filename
+            content = await upload_file.read()
+            dest.write_bytes(content)
+
+            ext = dest.suffix.lower()
+            saved.append({
+                "filename": filename,
+                "size": len(content),
+                "extension": ext,
+                "type_label": EXTENSION_LABELS.get(ext, ext.lstrip(".").upper() or "파일"),
+            })
+
+        return saved
+
+    async def save_attachments(
+        self, bid_notice_no: str, files: list[UploadFile]
+    ) -> list[dict]:
+        return await self.save_files(
+            self.config.attachments_base_dir, bid_notice_no, files
+        )
+
+    async def save_output_files(
+        self, bid_notice_no: str, files: list[UploadFile]
+    ) -> list[dict]:
+        return await self.save_files(
+            self.config.output_base_dir, bid_notice_no, files
         )
 
     def read_bid_context(self, bid_notice_no: str) -> Optional[str]:
