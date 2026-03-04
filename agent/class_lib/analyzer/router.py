@@ -9,6 +9,7 @@ ClaudeClient를 싱글톤으로 유지하여 PromptBuilder의 시스템 프롬�
 """
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -121,6 +122,9 @@ async def analyze_announcement(body: AnalyzeRequest):
 
     if not result:
         logger.warning(f"분석 실패: [{bid_notice_no}]")
-        return {"status": "error", "message": "분석 실패"}
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": "분석 실패"},
+        )
 
     return result

@@ -1,6 +1,7 @@
 """Server lifespan 단위 테스트 (2건)
 
 G2BService, PipelineRunner, CollectorScheduler mock 사용.
+v2: get_profile mock 추가, collect_and_filter AsyncMock 처리.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -17,10 +18,14 @@ class TestLifespan:
         mock_g2b = AsyncMock()
         mock_pipeline = AsyncMock()
         mock_scheduler = MagicMock()
+        mock_scheduler.collect_and_filter = AsyncMock()
 
         mocker.patch("server.G2BService", return_value=mock_g2b)
         mocker.patch("server.PipelineRunner", return_value=mock_pipeline)
         mocker.patch("server.CollectorScheduler", return_value=mock_scheduler)
+        mocker.patch("server.get_profile", return_value=MagicMock(
+            profile_id="test", company=MagicMock(name="TestCo"),
+        ))
 
         app = FastAPI()
 
@@ -35,10 +40,14 @@ class TestLifespan:
         mock_g2b = AsyncMock()
         mock_pipeline = AsyncMock()
         mock_scheduler = MagicMock()
+        mock_scheduler.collect_and_filter = AsyncMock()
 
         mocker.patch("server.G2BService", return_value=mock_g2b)
         mocker.patch("server.PipelineRunner", return_value=mock_pipeline)
         mocker.patch("server.CollectorScheduler", return_value=mock_scheduler)
+        mocker.patch("server.get_profile", return_value=MagicMock(
+            profile_id="test", company=MagicMock(name="TestCo"),
+        ))
 
         app = FastAPI()
 

@@ -20,6 +20,7 @@ export async function getAnnouncements(params: FilterParams) {
     category: params.category.length > 0 ? params.category.join(',') : undefined,
     min_score: params.minScore > 0 ? params.minScore : undefined,
     status: params.status || undefined,
+    deadline: params.deadline || undefined,
     date_from: params.dateFrom || undefined,
     date_to: params.dateTo || undefined,
     search: params.search || undefined,

@@ -13,22 +13,7 @@ from collections import Counter
 from loguru import logger
 
 from config.config import Config
-
-
-# ── 가중치 상수 ─────────────────────────────────────────────
-DIMENSION_WEIGHTS = {
-    "business_relevance": 0.35,
-    "tech_match": 0.25,
-    "budget_fit": 0.15,
-    "qualification": 0.15,
-    "competition": 0.10,
-}
-
-# 차원 키 목록
-DIMENSION_KEYS = list(DIMENSION_WEIGHTS.keys())
-
-# 누락 차원 기본 점수
-DEFAULT_DIMENSION_SCORE = 50
+from class_lib.profile.profile_loader import get_profile
 
 
 class Scoring:
@@ -40,6 +25,18 @@ class Scoring:
 
     def __init__(self):
         self.config = Config()
+
+        # 프로필에서 점수 설정 로드
+        profile = get_profile()
+        scoring = profile.scoring
+
+        self._dimension_weights: dict[str, float] = {
+            key: dim.weight
+            for key, dim in scoring.dimensions.items()
+        }
+        self._dimension_keys: list[str] = list(self._dimension_weights.keys())
+        self._default_score: int = scoring.default_score
+        self._score_tolerance: int = scoring.score_tolerance
 
     # ── 점수 범위 검증 ──────────────────────────────────────
 
@@ -109,7 +106,7 @@ class Scoring:
     ) -> int:
         """차원별 가중 합산 결과와 Claude 보고 점수 비교
 
-        차이 5점 초과 시 가중합산 결과를 우선 사용한다.
+        차이가 score_tolerance 초과 시 가중합산 결과를 우선 사용한다.
 
         Args:
             dimensions: 검증 완료된 차원별 점수 dict
@@ -119,13 +116,13 @@ class Scoring:
             최종 사용할 점수
         """
         calculated = sum(
-            dimensions.get(key, {}).get("score", DEFAULT_DIMENSION_SCORE)
+            dimensions.get(key, {}).get("score", self._default_score)
             * weight
-            for key, weight in DIMENSION_WEIGHTS.items()
+            for key, weight in self._dimension_weights.items()
         )
         calculated = round(calculated)
 
-        if abs(calculated - reported_score) > 5:
+        if abs(calculated - reported_score) > self._score_tolerance:
             logger.warning(
                 f"점수 불일치 — Claude 보고: {reported_score}, "
                 f"가중합산: {calculated}. 가중합산 값 사용"
@@ -169,8 +166,8 @@ class Scoring:
     def _validate_dimensions(self, dimensions: dict) -> dict:
         """차원별 점수 검증 및 누락 보정
 
-        5개 차원 모두 존재하는지 확인하고,
-        누락 시 기본값(50점)을 적용한다.
+        프로필에 정의된 차원 모두 존재하는지 확인하고,
+        누락 시 기본값을 적용한다.
 
         Args:
             dimensions: Claude 응답의 dimensions 객체
@@ -179,21 +176,21 @@ class Scoring:
             검증/보정된 dimensions dict
         """
         validated = {}
-        for key in DIMENSION_KEYS:
+        for key in self._dimension_keys:
             if key in dimensions:
                 dim = dimensions[key]
                 validated[key] = {
                     "score": self.validate_score(
-                        dim.get("score", DEFAULT_DIMENSION_SCORE)
+                        dim.get("score", self._default_score)
                     ),
                     "reason": dim.get("reason", ""),
                 }
             else:
                 logger.warning(
-                    f"차원 누락: {key} → 기본값 {DEFAULT_DIMENSION_SCORE} 적용"
+                    f"차원 누락: {key} → 기본값 {self._default_score} 적용"
                 )
                 validated[key] = {
-                    "score": DEFAULT_DIMENSION_SCORE,
+                    "score": self._default_score,
                     "reason": "차원 누락으로 기본값 적용",
                 }
         return validated

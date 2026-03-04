@@ -156,6 +156,7 @@ class CollectedAnnouncement(BaseModel):
     link_url: str = ""                            # 공고 URL
     raw_data: dict = Field(default_factory=dict)  # 원본 JSON 전체
     collected_at: str = ""                        # 수집 시각 ISO 8601
+    attachment_urls: list[str] = Field(default_factory=list)  # v2: 첨부파일 URL 목록
 
 
 # ============================================================

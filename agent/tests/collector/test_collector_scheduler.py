@@ -72,6 +72,7 @@ class TestSuccessHistory:
             CollectedAnnouncement(bid_notice_no="002", bid_notice_nm="테스트2"),
         ]
         sched.g2b_service.fetch_announcements = AsyncMock(return_value=collected)
+        sched.g2b_service.fetch_attachment_urls = AsyncMock(return_value=[])
         sched.g2b_service.save_history = AsyncMock()
 
         filtered = [

@@ -1,13 +1,19 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import MarkdownIt from 'markdown-it'
 import { useAnnouncementDetail } from '@/composables/useAnnouncementDetail'
+import { useAnnouncementFiles } from '@/composables/useAnnouncementFiles'
+import { getAttachmentDownloadUrl, getOutputDownloadUrl } from '@/api/files'
+import { useToast } from '@/utils/toast'
 import type { AnnouncementStatus } from '@/types'
 import ScoreBadge from '@/components/common/ScoreBadge.vue'
 import CategoryTag from '@/components/common/CategoryTag.vue'
 import StatusSelect from '@/components/common/StatusSelect.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import ErrorAlert from '@/components/common/ErrorAlert.vue'
+
+const md = new MarkdownIt()
 
 const route = useRoute()
 const id = Number(route.params.id)
@@ -20,7 +26,46 @@ const {
   updateStatus,
 } = useAnnouncementDetail(id)
 
+const {
+  attachments,
+  outputFiles,
+  bidContextContent,
+  bidContextExists,
+  loadingFiles,
+  loadingBidContext,
+  fetchFiles,
+  fetchBidContext,
+} = useAnnouncementFiles()
+
+const { toast } = useToast()
+
 const showAnalysisDetail = ref(false)
+const showBidContext = ref(false)
+const showFiles = ref(false)
+
+async function copyBidNoticeNo() {
+  if (!detail.value) return
+  await navigator.clipboard.writeText(detail.value.bid_notice_no)
+  toast.success('공고번호가 복사되었습니다.')
+}
+
+watch(() => detail.value?.bid_notice_no, (bidNoticeNo) => {
+  if (bidNoticeNo) {
+    fetchFiles(bidNoticeNo)
+    fetchBidContext(bidNoticeNo)
+  }
+}, { immediate: true })
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const renderedBidContext = computed(() => {
+  if (!bidContextContent.value) return ''
+  return md.render(bidContextContent.value)
+})
 
 function handleStatusChange(newStatus: string) {
   updateStatus(newStatus as AnnouncementStatus)
@@ -94,8 +139,18 @@ const dDayInfo = computed(() => {
         <div class="flex items-start justify-between">
           <div>
             <h1 class="text-2xl font-bold text-gray-900">{{ detail.bid_notice_nm }}</h1>
-            <p class="mt-1 text-sm text-gray-500">
+            <p class="mt-1 text-sm text-gray-500 flex items-center gap-1">
               공고번호: {{ detail.bid_notice_no }}
+              <button
+                class="inline-flex items-center rounded px-1.5 py-0.5 text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition"
+                title="공고번호 복사"
+                @click="copyBidNoticeNo"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                </svg>
+              </button>
             </p>
           </div>
           <StatusSelect :status="detail.status" :disabled="updating" @change="handleStatusChange" />
@@ -258,6 +313,99 @@ const dDayInfo = computed(() => {
             <h3 class="font-medium text-gray-700">위험 요인</h3>
             <ul class="mt-1 list-disc list-inside text-gray-600">
               <li v-for="(r, i) in (detail.analysis_detail.risks as string[])" :key="i">{{ r }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- 입찰 컨텍스트 -->
+      <div
+        v-if="bidContextExists"
+        class="rounded-lg border border-gray-200 bg-white shadow-sm"
+      >
+        <button
+          class="flex w-full items-center justify-between p-6 text-left"
+          @click="showBidContext = !showBidContext"
+        >
+          <h2 class="text-lg font-semibold text-gray-900">입찰 컨텍스트</h2>
+          <span class="text-gray-400">{{ showBidContext ? '접기' : '펼치기' }}</span>
+        </button>
+
+        <div v-if="showBidContext" class="border-t border-gray-200 p-6">
+          <div class="prose prose-sm max-w-none" v-html="renderedBidContext" />
+        </div>
+      </div>
+
+      <!-- 첨부파일 / 생성 문서 -->
+      <div
+        v-if="attachments.length > 0 || outputFiles.length > 0"
+        class="rounded-lg border border-gray-200 bg-white shadow-sm"
+      >
+        <button
+          class="flex w-full items-center justify-between p-6 text-left"
+          @click="showFiles = !showFiles"
+        >
+          <h2 class="text-lg font-semibold text-gray-900">
+            관련 파일
+            <span class="ml-2 text-sm font-normal text-gray-500">
+              {{ attachments.length + outputFiles.length }}건
+            </span>
+          </h2>
+          <span class="text-gray-400">{{ showFiles ? '접기' : '펼치기' }}</span>
+        </button>
+
+        <div v-if="showFiles" class="border-t border-gray-200 p-6 space-y-6">
+          <!-- 원본 첨부파일 -->
+          <div v-if="attachments.length > 0">
+            <h3 class="text-sm font-medium text-gray-700 mb-3">원본 첨부파일</h3>
+            <ul class="space-y-2">
+              <li
+                v-for="file in attachments"
+                :key="'att-' + file.filename"
+                class="flex items-center justify-between rounded-md border border-gray-100 bg-gray-50 px-4 py-3"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700">
+                    {{ file.type_label }}
+                  </span>
+                  <span class="text-sm text-gray-900 truncate">{{ file.filename }}</span>
+                  <span class="text-xs text-gray-400 whitespace-nowrap">{{ formatFileSize(file.size) }}</span>
+                </div>
+                <a
+                  :href="getAttachmentDownloadUrl(detail!.bid_notice_no, file.filename)"
+                  class="ml-4 inline-flex items-center rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 transition whitespace-nowrap"
+                  download
+                >
+                  다운로드
+                </a>
+              </li>
+            </ul>
+          </div>
+
+          <!-- 생성 문서 -->
+          <div v-if="outputFiles.length > 0">
+            <h3 class="text-sm font-medium text-gray-700 mb-3">생성 문서</h3>
+            <ul class="space-y-2">
+              <li
+                v-for="file in outputFiles"
+                :key="'out-' + file.filename"
+                class="flex items-center justify-between rounded-md border border-gray-100 bg-gray-50 px-4 py-3"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700">
+                    {{ file.type_label }}
+                  </span>
+                  <span class="text-sm text-gray-900 truncate">{{ file.filename }}</span>
+                  <span class="text-xs text-gray-400 whitespace-nowrap">{{ formatFileSize(file.size) }}</span>
+                </div>
+                <a
+                  :href="getOutputDownloadUrl(detail!.bid_notice_no, file.filename)"
+                  class="ml-4 inline-flex items-center rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 transition whitespace-nowrap"
+                  download
+                >
+                  다운로드
+                </a>
+              </li>
             </ul>
           </div>
         </div>

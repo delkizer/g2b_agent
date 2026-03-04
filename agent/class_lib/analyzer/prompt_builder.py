@@ -1,6 +1,7 @@
 """Analyzer 도메인 — 프롬프트 생성기
 
-프롬프트 .md 파일을 로드하고, 시스템/사용자 프롬프트를 생성한다.
+프로필의 프롬프트 디렉토리에서 .md 파일을 로드하고,
+시스템/사용자 프롬프트를 생성한다.
 시스템 프롬프트는 캐싱하여 동일 배치 내 재사용한다.
 
 참조:
@@ -14,22 +15,13 @@ from pathlib import Path
 from loguru import logger
 
 from config.config import Config
+from class_lib.profile.profile_loader import get_profile, get_profile_prompts_dir
 
 
 # ── 상수 ────────────────────────────────────────────────────
 
 # 원문 최대 길이 (자)
 MAX_RAW_CONTENT_LENGTH = 3000
-
-# 프롬프트 파일 결합 순서
-SYSTEM_PROMPT_FILES = [
-    "_base.md",
-    "classification.md",
-    "scoring.md",
-]
-
-# 선택적 Few-shot 파일
-EXAMPLES_FILE = "examples.md"
 
 # 파일 결합 구분자
 FILE_SEPARATOR = "\n\n---\n\n"
@@ -38,7 +30,8 @@ FILE_SEPARATOR = "\n\n---\n\n"
 class PromptBuilder:
     """프롬프트 생성기
 
-    프롬프트 .md 파일을 로드하고, 시스템/사용자 프롬프트를 생성한다.
+    프로필의 프롬프트 디렉토리에서 .md 파일을 로드하고,
+    시스템/사용자 프롬프트를 생성한다.
     """
 
     def __init__(self):
@@ -46,18 +39,21 @@ class PromptBuilder:
         self._templates: dict[str, str] = {}
         self._system_prompt_cache: str | None = None
 
+        # 프로필에서 프롬프트 설정 로드
+        profile = get_profile()
+        self._system_prompt_files: list[str] = profile.prompts.system_files
+        self._examples_file: str = profile.prompts.examples_file
+
     # ── 템플릿 로드 ─────────────────────────────────────────
 
     def load_templates(self, prompts_dir: str = None) -> None:
         """프롬프트 .md 파일 로드 + 메모리 캐싱
 
         Args:
-            prompts_dir: 프롬프트 디렉토리 경로. 미지정 시 프로젝트 루트/agent/prompts/
+            prompts_dir: 프롬프트 디렉토리 경로. 미지정 시 프로필 prompts 디렉토리 사용.
         """
         if prompts_dir is None:
-            # 프로젝트 루트 기준 기본 경로
-            project_root = Path(__file__).resolve().parent.parent.parent
-            prompts_dir = str(project_root / "prompts")
+            prompts_dir = str(get_profile_prompts_dir())
 
         prompts_path = Path(prompts_dir)
 
@@ -66,7 +62,7 @@ class PromptBuilder:
             return
 
         # 필수 파일 로드
-        for filename in SYSTEM_PROMPT_FILES:
+        for filename in self._system_prompt_files:
             filepath = prompts_path / filename
             if filepath.exists():
                 self._templates[filename] = filepath.read_text(
@@ -80,14 +76,14 @@ class PromptBuilder:
                 logger.warning(f"프롬프트 파일 없음: {filepath}")
 
         # 선택적 Few-shot 파일 로드
-        examples_path = prompts_path / EXAMPLES_FILE
+        examples_path = prompts_path / self._examples_file
         if examples_path.exists():
-            self._templates[EXAMPLES_FILE] = examples_path.read_text(
+            self._templates[self._examples_file] = examples_path.read_text(
                 encoding="utf-8"
             )
             logger.info(
-                f"프롬프트 로드: {EXAMPLES_FILE} "
-                f"({len(self._templates[EXAMPLES_FILE])}자)"
+                f"프롬프트 로드: {self._examples_file} "
+                f"({len(self._templates[self._examples_file])}자)"
             )
 
         # 캐시 초기화 (재로드 시 기존 캐시 무효화)
@@ -116,14 +112,14 @@ class PromptBuilder:
 
         parts = []
 
-        # 필수 파일 결합 (_base.md -> classification.md -> scoring.md)
-        for filename in SYSTEM_PROMPT_FILES:
+        # 필수 파일 결합
+        for filename in self._system_prompt_files:
             if filename in self._templates:
                 parts.append(self._templates[filename])
 
         # 선택적 Few-shot 예시 추가
-        if include_examples and EXAMPLES_FILE in self._templates:
-            parts.append(self._templates[EXAMPLES_FILE])
+        if include_examples and self._examples_file in self._templates:
+            parts.append(self._templates[self._examples_file])
 
         system_prompt = FILE_SEPARATOR.join(parts)
         self._system_prompt_cache = system_prompt

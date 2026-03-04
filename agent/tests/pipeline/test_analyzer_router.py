@@ -1,6 +1,9 @@
 """Analyzer 라우터 단위 테스트 (2건)
 
 FastAPI TestClient + ClaudeClient mock 사용.
+
+v2: Analyzer는 deprecated (분석은 Cowork에서 수행).
+    라우터 자체는 비상용으로 유지하므로 테스트도 유지.
 """
 
 from unittest.mock import AsyncMock
@@ -49,7 +52,7 @@ class TestAnalyzerRouter:
         assert data["relevance_score"] == 85
 
     async def test_rt05_analyze_failure(self, app, mocker):
-        """RT-05: POST /analyze 실패 → error 응답"""
+        """RT-05: POST /analyze 실패 → 500 에러 응답"""
         mock_client = AsyncMock()
         mock_client.analyze_announcement = AsyncMock(return_value={})
         mocker.patch(
@@ -67,5 +70,5 @@ class TestAnalyzerRouter:
                 },
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 500
         assert response.json()["status"] == "error"

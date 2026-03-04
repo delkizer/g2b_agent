@@ -1,12 +1,13 @@
-"""공고 라우터 — 6개 엔드포인트
+"""공고 라우터 — 7개 엔드포인트
 
 선언 순서 중요:
-  1. POST /batch        (배치 등록)
-  2. GET  /stats        (통계 — {id}보다 먼저)
-  3. GET  /export       (내보내기 — {id}보다 먼저)
-  4. GET  /             (목록)
-  5. GET  /{id}         (상세)
-  6. PATCH /{id}/status (상태 변경)
+  1. POST  /batch           (배치 등록)
+  2. GET   /stats           (통계 — {id}보다 먼저)
+  3. GET   /export          (내보내기 — {id}보다 먼저)
+  4. GET   /                (목록)
+  5. GET   /{id}            (상세)
+  6. PATCH /{id}/analysis   (v2: 분석 결과 업데이트)
+  7. PATCH /{id}/status     (상태 변경)
 """
 
 from typing import Optional
@@ -16,6 +17,8 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.announcements.schemas import (
+    AnalysisResultResponse,
+    AnalysisResultUpdate,
     AnnouncementBatchRequest,
     AnnouncementBatchResponse,
     AnnouncementDetailResponse,
@@ -151,7 +154,36 @@ async def get_detail(
         )
 
 
-# 6. 상태 변경 (PATCH) ────────────────────────────────────
+# 6. 분석 결과 업데이트 (PATCH) — v2 ──────────────────
+
+@router.patch(
+    "/{id}/analysis",
+    response_model=AnalysisResultResponse,
+    dependencies=[Depends(verify_api_key)],
+)
+async def update_analysis(
+    id: int,
+    body: AnalysisResultUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Cowork MCP를 통한 분석 결과 저장 (pending → analyzed)"""
+    service = AnnouncementService()
+    try:
+        return await service.update_analysis_result(
+            session, id, body.model_dump(exclude_none=True)
+        )
+    except AppException:
+        raise
+    except Exception as e:
+        logger.error(f"분석 결과 저장 중 DB 오류: {e}")
+        raise AppException(
+            status_code=503,
+            detail="데이터베이스 연결에 실패했습니다",
+            error_code="DATABASE_ERROR",
+        )
+
+
+# 7. 상태 변경 (PATCH) ────────────────────────────────────
 
 @router.patch("/{id}/status", response_model=StatusUpdateResponse)
 async def update_status(

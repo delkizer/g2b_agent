@@ -25,12 +25,14 @@ from fastapi import FastAPI
 from loguru import logger
 
 from config.logger import setup_logger
+from class_lib.profile.profile_loader import get_profile
 from class_lib.collector.collector_scheduler import CollectorScheduler
 from class_lib.collector.g2b_service import G2BService
 from class_lib.pipeline_runner.pipeline_runner import PipelineRunner
 from class_lib.collector.router import router as collector_router
 from class_lib.pipeline_runner.router import router as pipeline_router
-from class_lib.analyzer.router import router as analyzer_router
+# v2: analyzer_router 비활성화 (분석은 Cowork에서 수행)
+# from class_lib.analyzer.router import router as analyzer_router
 
 
 @asynccontextmanager
@@ -41,6 +43,10 @@ async def lifespan(app: FastAPI):
     # 1. loguru 전역 설정 (진입점 무관하게 여기서 통일)
     setup_logger(level="INFO")
     logger.info("G2B Agent 시작")
+
+    # 1.5. 프로필 로드 + 검증 (fail-fast)
+    profile = get_profile()
+    logger.info(f"Analysis Profile: {profile.profile_id} ({profile.company.name})")
 
     # 2. DB 테이블 보장
     g2b_service = G2BService()
@@ -78,4 +84,5 @@ app = FastAPI(
 # 라우터 등록
 app.include_router(collector_router, prefix="/api/internal/collector", tags=["Collector"])
 app.include_router(pipeline_router, prefix="/api/internal/pipeline", tags=["Pipeline"])
-app.include_router(analyzer_router, prefix="/api/internal/analyzer", tags=["Analyzer"])
+# v2: analyzer_router 비활성화 (분석은 Cowork에서 수행)
+# app.include_router(analyzer_router, prefix="/api/internal/analyzer", tags=["Analyzer"])

@@ -7,7 +7,7 @@ from datetime import date, datetime
 
 from loguru import logger
 from openpyxl import Workbook
-from sqlalchemy import select, func, case, text, literal_column
+from sqlalchemy import select, func, case, text, literal_column, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
@@ -136,6 +136,8 @@ class AnnouncementService:
                 THEN (raw_data->>'opengDate' || 'T' || COALESCE(NULLIF(raw_data->>'opengTm', ''), '00:00') || ':00')::timestamptz
                 ELSE NULL END
             """).label('openg_dt'),
+            Announcement.analysis_detail['key_factors'].label('key_factors'),
+            Announcement.analysis_detail['risks'].label('risks'),
         )
 
         count_query = select(func.count()).select_from(Announcement)
@@ -300,6 +302,97 @@ class AnnouncementService:
             "trend": trend,
         }
 
+    async def update_analysis_result(
+        self, session: AsyncSession, announcement_id: int, analysis_data: dict
+    ) -> dict:
+        """분석 결과 업데이트 (v2: Cowork MCP PATCH)
+
+        pending → analyzed 자동 전이. analyzed_at 타임스탬프 기록.
+        """
+        result = await session.execute(
+            select(Announcement).where(Announcement.id == announcement_id)
+        )
+        row = result.scalar_one_or_none()
+
+        if row is None:
+            raise AppException(
+                status_code=404,
+                detail=f"공고를 찾을 수 없습니다: id={announcement_id}",
+                error_code="NOT_FOUND",
+            )
+
+        # 분석 필드 업데이트
+        row.category = analysis_data.get("category")
+        row.relevance_score = analysis_data.get("relevance_score", 0)
+        row.summary = analysis_data.get("summary")
+        row.requirements = analysis_data.get("requirements")
+        row.needs_research_lab = analysis_data.get("needs_research_lab", False)
+        row.analysis_detail = analysis_data.get("analysis_detail")
+
+        # 상태 전이 + 타임스탬프
+        row.status = "analyzed"
+        row.analyzed_at = datetime.utcnow()
+
+        await session.commit()
+        await session.refresh(row)
+
+        logger.info(
+            f"분석 결과 저장: id={row.id}, "
+            f"bid_notice_no={row.bid_notice_no}, "
+            f"score={row.relevance_score}"
+        )
+
+        return {
+            "id": row.id,
+            "bid_notice_no": row.bid_notice_no,
+            "status": row.status,
+            "relevance_score": row.relevance_score,
+            "analyzed_at": row.analyzed_at,
+        }
+
+    async def sync_from_bid_context(
+        self, session: AsyncSession, bid_notice_no: str, analysis_data: dict
+    ) -> dict:
+        """bid_context.md 분석 JSON으로 DB 동기화 (bid_notice_no 기준)"""
+        result = await session.execute(
+            select(Announcement).where(Announcement.bid_notice_no == bid_notice_no)
+        )
+        row = result.scalar_one_or_none()
+
+        if row is None:
+            raise AppException(
+                status_code=404,
+                detail=f"공고를 찾을 수 없습니다: bid_notice_no={bid_notice_no}",
+                error_code="NOT_FOUND",
+            )
+
+        row.category = analysis_data.get("category")
+        row.relevance_score = analysis_data.get("relevance_score", 0)
+        row.summary = analysis_data.get("summary")
+        row.requirements = analysis_data.get("requirements")
+        row.needs_research_lab = analysis_data.get("needs_research_lab", False)
+        row.analysis_detail = analysis_data.get("analysis_detail")
+
+        if row.status == "pending":
+            row.status = "analyzed"
+        row.analyzed_at = datetime.utcnow()
+
+        await session.commit()
+        await session.refresh(row)
+
+        logger.info(
+            f"bid_context 동기화: bid_notice_no={bid_notice_no}, "
+            f"score={row.relevance_score}"
+        )
+
+        return {
+            "id": row.id,
+            "bid_notice_no": row.bid_notice_no,
+            "status": row.status,
+            "relevance_score": row.relevance_score,
+            "analyzed_at": row.analyzed_at,
+        }
+
     async def update_status(
         self, session: AsyncSession, announcement_id: int, new_status: str
     ) -> dict:
@@ -402,6 +495,29 @@ class AnnouncementService:
         if filters.date_to:
             parsed = self._parse_date(filters.date_to, "date_to")
             query = query.where(Announcement.collected_at <= parsed)
+
+        # 마감 여부 (개찰일시 기준, 없으면 입찰마감일 폴백)
+        if getattr(filters, 'deadline', None) in ('active', 'closed'):
+            effective_deadline = literal_column("""
+                COALESCE(
+                    CASE WHEN raw_data->>'opengDate' IS NOT NULL AND raw_data->>'opengDate' != ''
+                    THEN (raw_data->>'opengDate' || 'T' || COALESCE(NULLIF(raw_data->>'opengTm', ''), '00:00') || ':00')::timestamptz
+                    ELSE NULL END,
+                    bid_close_dt
+                )
+            """)
+            if filters.deadline == 'active':
+                query = query.where(
+                    or_(
+                        effective_deadline.is_(None),
+                        effective_deadline > func.now(),
+                    )
+                )
+            else:
+                query = query.where(
+                    effective_deadline.isnot(None),
+                    effective_deadline <= func.now(),
+                )
 
         # 텍스트 검색
         if filters.search:

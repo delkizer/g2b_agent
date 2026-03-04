@@ -1,4 +1,10 @@
-"""Pipeline fixture — mock DB 커넥션 + 샘플 데이터"""
+"""Pipeline fixture — mock DB 커넥션 + 샘플 데이터 (v2)
+
+v2 변경:
+- sample_analyzed_row 제거 (pipeline에서 분석 단계 제거)
+- attachment_urls 필드 추가
+- analysis_result 필드 제거
+"""
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
@@ -30,6 +36,7 @@ def sample_filtered():
         "link_url": "https://www.g2b.go.kr/link/20260216001-00",
         "raw_data": {"bidNtceNo": "20260216001-00"},
         "filter_meta": {"matched_keywords": ["스포츠", "데이터"]},
+        "attachment_urls": [],
         "collected_at": "2026-02-16T09:00:00",
     }
 
@@ -49,27 +56,12 @@ def sample_db_row():
         "link_url": "https://www.g2b.go.kr/link/20260216001-00",
         "raw_data": {"bidNtceNo": "20260216001-00"},
         "filter_meta": {"matched_keywords": ["스포츠", "데이터"]},
+        "attachment_urls": [],
         "pipeline_status": "collected",
         "retry_count": 0,
         "collected_at": datetime(2026, 2, 16, 9, 0, tzinfo=timezone.utc),
+        "sent_at": None,
     }
-
-
-@pytest.fixture
-def sample_analyzed_row(sample_db_row):
-    """분석 완료 DB 행 dict (analyzed 상태)"""
-    row = dict(sample_db_row)
-    row["pipeline_status"] = "analyzed"
-    row["analysis_result"] = {
-        "category": "스포츠_데이터",
-        "relevance_score": 85,
-        "summary": "스포츠 데이터 분석 플랫폼 구축 사업",
-        "requirements": ["데이터 수집", "분석 엔진"],
-        "needs_research_lab": False,
-        "analysis_detail": "상세 분석 내용",
-    }
-    row["analyzed_at"] = datetime(2026, 2, 16, 9, 30, tzinfo=timezone.utc)
-    return row
 
 
 @pytest.fixture
@@ -88,9 +80,11 @@ def make_db_row():
             "link_url": "",
             "raw_data": {},
             "filter_meta": {},
+            "attachment_urls": [],
             "pipeline_status": "collected",
             "retry_count": 0,
             "collected_at": datetime(2026, 2, 16, 9, 0, tzinfo=timezone.utc),
+            "sent_at": None,
         }
         defaults.update(overrides)
         return defaults

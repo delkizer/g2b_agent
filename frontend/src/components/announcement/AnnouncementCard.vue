@@ -101,6 +101,21 @@ function goToDetail() {
       {{ announcement.summary }}
     </p>
 
+    <!-- 핵심 요인 / 리스크 -->
+    <div
+      v-if="announcement.key_factors?.length || announcement.risks?.length"
+      class="mt-2 space-y-1 text-xs"
+    >
+      <div v-if="announcement.key_factors?.length" class="flex items-start gap-1.5">
+        <span class="flex-shrink-0 rounded bg-blue-50 px-1.5 py-0.5 font-medium text-blue-600">핵심</span>
+        <span class="text-gray-600 line-clamp-1">{{ announcement.key_factors.join(' / ') }}</span>
+      </div>
+      <div v-if="announcement.risks?.length" class="flex items-start gap-1.5">
+        <span class="flex-shrink-0 rounded bg-red-50 px-1.5 py-0.5 font-medium text-red-600">이슈</span>
+        <span class="text-gray-600 line-clamp-1">{{ announcement.risks.join(' / ') }}</span>
+      </div>
+    </div>
+
     <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
       <CategoryTag v-if="announcement.category" :category="announcement.category" />
       <template v-if="formattedBidPeriod">

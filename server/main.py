@@ -14,6 +14,7 @@ from loguru import logger
 from apps.announcements.router import router as announcements_router
 from apps.auth.router import router as auth_router
 from apps.exceptions import AppException, app_exception_handler
+from apps.files.router import router as files_router
 from apps.health.router import router as health_router
 from config.config import Config
 from config.logger import setup_logger
@@ -69,3 +70,4 @@ app.add_exception_handler(AppException, app_exception_handler)
 app.include_router(health_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(announcements_router, prefix="/api")
+app.include_router(files_router, prefix="/api")

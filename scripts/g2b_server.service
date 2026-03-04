@@ -1,14 +1,14 @@
 [Unit]
-Description=G2B Agent HTTP - 나라장터 공고 수집 에이전트
+Description=G2B Server - 나라장터 마켓 인텔리전스 웹서비스
 After=network.target postgresql.service
 
 [Service]
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/work/g2b_agent/agent
-ExecStart=/home/ubuntu/work/g2b_agent/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8100
-Restart=always
+WorkingDirectory=/home/ubuntu/work/g2b_agent/server
+ExecStart=/home/ubuntu/work/g2b_agent/server/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
 RestartSec=30
 Environment=PYTHONUNBUFFERED=1
 KillSignal=SIGTERM

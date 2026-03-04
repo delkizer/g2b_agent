@@ -25,6 +25,9 @@ export function useAnnouncements() {
     if (q.status && typeof q.status === 'string') {
       filters.status = q.status as FilterParams['status']
     }
+    if (q.deadline && typeof q.deadline === 'string') {
+      filters.deadline = q.deadline as FilterParams['deadline']
+    }
     if (q.date_from && typeof q.date_from === 'string') filters.dateFrom = q.date_from
     if (q.date_to && typeof q.date_to === 'string') filters.dateTo = q.date_to
     if (q.search && typeof q.search === 'string') filters.search = q.search
@@ -42,6 +45,7 @@ export function useAnnouncements() {
     if (filters.category.length > 0) query.category = filters.category.join(',')
     if (filters.minScore > 0) query.min_score = String(filters.minScore)
     if (filters.status) query.status = filters.status
+    if (filters.deadline) query.deadline = filters.deadline
     if (filters.dateFrom) query.date_from = filters.dateFrom
     if (filters.dateTo) query.date_to = filters.dateTo
     if (filters.search) query.search = filters.search

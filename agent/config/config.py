@@ -64,7 +64,7 @@ class Config:
     def database_url(self) -> str:
         return self.env('DATABASE_URL', default='postgresql://localhost:5432/spotv')
 
-    # === 키워드 필터 ===
-    # 키워드 목록은 Config에서 관리하지 않는다.
-    # Phase 1: KeywordFilter 클래스 내 DEFAULT_* 상수 사용
-    # Phase 2: agent/config/keywords.json 외부 파일 (KeywordFilter가 직접 로드)
+    # === Analysis Profile ===
+    @property
+    def profile_id(self) -> str:
+        return self.env('PROFILE_ID', default='spotv')

@@ -13,10 +13,13 @@ export type SortField =
 /**
  * 공고 목록 조회 필터 파라미터
  */
+export type DeadlineFilter = '' | 'active' | 'closed'
+
 export interface FilterParams {
   category: AnnouncementCategory[]
   minScore: number
   status: AnnouncementStatus | ''
+  deadline: DeadlineFilter
   dateFrom: string
   dateTo: string
   search: string
@@ -49,6 +52,7 @@ export function createDefaultFilterParams(): FilterParams {
     category: [],
     minScore: 0,
     status: '',
+    deadline: '',
     dateFrom: '',
     dateTo: '',
     search: '',

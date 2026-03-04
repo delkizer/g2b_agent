@@ -27,7 +27,10 @@ class AnalyzedAnnouncementItem(BaseModel):
     link_url: Optional[str] = Field(None, description="나라장터 원문 링크")
     raw_data: Optional[dict] = Field(None, description="나라장터 원본 JSON")
 
-    # 분석 결과 (Claude)
+    # v2: 첨부파일 URL
+    attachment_urls: Optional[list[str]] = Field(None, description="첨부파일 URL 목록")
+
+    # 분석 결과 (v2: optional — Cowork가 PATCH로 채움)
     category: Optional[str] = Field(None, description="분류")
     relevance_score: Optional[int] = Field(None, description="적합성 점수", ge=0, le=100)
     summary: Optional[str] = Field(None, description="사업 요약")
@@ -84,6 +87,8 @@ class AnnouncementListItem(BaseModel):
     openg_dt: Optional[datetime] = None
     status: str = "pending"
     needs_research_lab: bool = False
+    key_factors: Optional[list[str]] = None
+    risks: Optional[list[str]] = None
     collected_at: Optional[datetime] = None
     created_at: datetime
 
@@ -115,6 +120,7 @@ class AnnouncementDetailResponse(BaseModel):
     openg_dt: Optional[datetime] = None
     link_url: Optional[str] = None
     raw_data: Optional[dict] = None
+    attachment_urls: Optional[list[str]] = None
 
     category: Optional[str] = None
     relevance_score: int = 0
@@ -183,6 +189,16 @@ class FilterParams(BaseModel):
     search: Optional[str] = Query(
         None, description="텍스트 검색 (공고명, 요약)", max_length=200
     )
+    deadline: Optional[str] = Query(
+        None, description="마감 여부 필터 (active=진행중, closed=마감)"
+    )
+
+    @field_validator("deadline")
+    @classmethod
+    def validate_deadline(cls, v):
+        if v is not None and v not in ("active", "closed"):
+            raise ValueError(f"deadline 값이 유효하지 않습니다: '{v}' (active 또는 closed)")
+        return v
     sort: SortField = Query(SortField.created_at, description="정렬 기준")
     order: SortOrder = Query(SortOrder.desc, description="정렬 방향")
     page: int = Query(1, description="페이지 번호", ge=1)
@@ -200,6 +216,27 @@ class FilterParams(BaseModel):
         if self.category is None:
             return None
         return [c.strip() for c in self.category.split(",") if c.strip()]
+
+
+# ── 분석 결과 업데이트 (v2: Cowork MCP PATCH) ───────────
+
+class AnalysisResultUpdate(BaseModel):
+    """Cowork가 MCP를 통해 분석 결과를 저장할 때 사용하는 스키마"""
+    category: str = Field(..., description="분류")
+    relevance_score: int = Field(..., description="적합성 점수", ge=0, le=100)
+    summary: str = Field(..., description="사업 요약")
+    requirements: Optional[str] = Field(None, description="참가자격 요약")
+    needs_research_lab: Optional[bool] = Field(None, description="기업부설연구소 필요 여부")
+    analysis_detail: Optional[dict] = Field(None, description="상세 분석 결과")
+
+
+class AnalysisResultResponse(BaseModel):
+    """분석 결과 저장 응답"""
+    id: int
+    bid_notice_no: str
+    status: str
+    relevance_score: int
+    analyzed_at: datetime
 
 
 # ── 상태 변경 ────────────────────────────────────────────

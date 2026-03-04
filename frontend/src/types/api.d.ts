@@ -47,6 +47,8 @@ export interface components {
       summary?: string | null
       status: string
       needs_research_lab: boolean
+      key_factors?: string[] | null
+      risks?: string[] | null
       collected_at?: string | null
       created_at: string
     }

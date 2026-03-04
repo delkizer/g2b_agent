@@ -267,6 +267,105 @@ class G2BService:
 
         return []
 
+    # === 첨부파일 URL 수집 (v2: BidPublicInfoService) ===
+
+    async def fetch_attachment_urls(self, bid_notice_no: str) -> list[str]:
+        """필터 통과 공고의 첨부파일 URL 수집
+
+        BidPublicInfoService 2개 엔드포인트에서 URL을 수집한다:
+        1. getBidPblancListInfoServc → ntceSpecDocUrl1~10 (규격서 URL)
+        2. getBidPblancListInfoEorderAtchFileInfo → eorderAtchFileUrl (e발주 첨부)
+
+        Graceful Degradation: 실패 시 빈 리스트 반환 (파이프라인 차단 없음).
+
+        Args:
+            bid_notice_no: 입찰공고번호
+
+        Returns:
+            첨부파일 URL 리스트 (중복 제거)
+        """
+        urls = []
+        bid_info_base = f"{self.config.g2b_api_base_url}/ad/BidPublicInfoService"
+
+        async with httpx.AsyncClient() as client:
+            # 1. 규격서 URL (ntceSpecDocUrl1~10)
+            try:
+                body = await self._call_api(
+                    client,
+                    f"{bid_info_base}/getBidPblancListInfoServc",
+                    {
+                        "ServiceKey": self.api_key,
+                        "type": "json",
+                        "numOfRows": 1,
+                        "pageNo": 1,
+                        "inqryDiv": 2,
+                        "bidNtceNo": bid_notice_no,
+                    },
+                )
+                raw_items = self._parse_raw_items(body.get("items"))
+                if raw_items:
+                    item = raw_items[0]
+                    for i in range(1, 11):
+                        url = item.get(f"ntceSpecDocUrl{i}")
+                        if url and url.strip():
+                            urls.append(url.strip())
+            except Exception as e:
+                logger.warning(f"규격서 URL 수집 실패: [{bid_notice_no}] - {e}")
+
+            # 2. e발주 첨부파일 URL
+            try:
+                body = await self._call_api(
+                    client,
+                    f"{bid_info_base}/getBidPblancListInfoEorderAtchFileInfo",
+                    {
+                        "ServiceKey": self.api_key,
+                        "type": "json",
+                        "numOfRows": 10,
+                        "pageNo": 1,
+                        "inqryDiv": 2,
+                        "bidNtceNo": bid_notice_no,
+                    },
+                )
+                raw_items = self._parse_raw_items(body.get("items"))
+                for item in raw_items:
+                    url = item.get("eorderAtchFileUrl")
+                    if url and url.strip():
+                        urls.append(url.strip())
+            except Exception as e:
+                logger.warning(f"e발주 첨부 URL 수집 실패: [{bid_notice_no}] - {e}")
+
+        # 중복 제거 (순서 유지)
+        seen = set()
+        unique_urls = []
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+
+        if unique_urls:
+            logger.debug(f"첨부 URL {len(unique_urls)}개 수집: [{bid_notice_no}]")
+
+        return unique_urls
+
+    def _parse_raw_items(self, items_raw: list | dict | None) -> list[dict]:
+        """API 응답 items를 raw dict 리스트로 파싱
+
+        _parse_items()와 동일 로직이지만 G2BApiItem 래핑 없이 원본 dict 반환.
+        BidPublicInfoService 등 다른 API 서비스 응답 파싱에 사용.
+        """
+        if items_raw is None:
+            return []
+        if isinstance(items_raw, dict):
+            item_data = items_raw.get("item", [])
+            if isinstance(item_data, dict):
+                return [item_data]
+            elif isinstance(item_data, list):
+                return item_data
+            return []
+        if isinstance(items_raw, list):
+            return items_raw
+        return []
+
     # === 수집 이력 DB (Direct SQL, asyncpg) ===
 
     async def get_last_collected_dt(self, operation: str = "bid_announcement") -> datetime | None:

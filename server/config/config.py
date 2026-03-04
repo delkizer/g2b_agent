@@ -76,3 +76,14 @@ class Config:
     @property
     def notion_min_score(self) -> int:
         return self.env.int('NOTION_MIN_SCORE', default=60)
+
+    # === 파일 경로 ===
+    @property
+    def attachments_base_dir(self) -> str:
+        return self.env('ATTACHMENTS_BASE_DIR',
+            default='/mnt/c/Users/USER/OneDrive - 이용석/spotv/TRACKMAN/인수인계/베드민턴/g2b_agent/attachments')
+
+    @property
+    def output_base_dir(self) -> str:
+        return self.env('OUTPUT_BASE_DIR',
+            default='/mnt/c/Users/USER/OneDrive - 이용석/spotv/TRACKMAN/인수인계/베드민턴/g2b_agent/output')

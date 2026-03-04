@@ -1,15 +1,24 @@
-"""PipelineRunner 단위 테스트 (30건)
+"""PipelineRunner + repository 단위 테스트 (v2 — 30건)
+
+v2 변경:
+- PipelineRunner.run() → 저장 + 워커 기동 (즉시 "accepted" 반환)
+- DB 조작은 repository 모듈 함수로 분리
+- _analyze_one() 제거 (분석은 Cowork에서 수행)
+- _build_payload() 단일 인자 (analysis_result 제거)
+- _send_one() 건별 EC2 전송
 
 asyncpg, httpx mock 사용. 실제 DB/HTTP 호출 없음.
 """
 
+import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from class_lib.pipeline_runner.pipeline_runner import PipelineRunner
+from class_lib.pipeline_runner import repository
 from class_lib.pipeline_runner.utils import parse_timestamptz, serialize_dt
 
 
@@ -36,120 +45,98 @@ class TestRun:
     def runner(self):
         return PipelineRunner()
 
-    async def test_pr02_concurrent_skip(self, runner):
-        """PR-02: 동시 실행 방지 → skipped"""
+    async def test_pr02_concurrent_skip(self, runner, mocker, mock_conn):
+        """PR-02: 워커 실행 중 → 저장만 수행, "accepted" 반환"""
         runner._running = True
-        result = await runner.run()
-        assert result["status"] == "skipped"
-        assert result["reason"] == "already_running"
+        mocker.patch(
+            "class_lib.pipeline_runner.pipeline_runner.asyncpg.connect",
+            new_callable=AsyncMock,
+            return_value=mock_conn,
+        )
+        mock_conn.execute.return_value = "INSERT 0 1"
+
+        result = await runner.run(announcements=[{
+            "bid_notice_no": "TEST-001",
+            "bid_notice_nm": "테스트",
+        }])
+        assert result["status"] == "accepted"
+        assert result["saved"] == 1
 
     async def test_pr03_no_items(self, runner, mocker, mock_conn):
-        """PR-03: 빈 수신 + collected 없음 → no_items"""
+        """PR-03: 빈 수신 → accepted, saved=0"""
         mocker.patch(
             "class_lib.pipeline_runner.pipeline_runner.asyncpg.connect",
             new_callable=AsyncMock,
             return_value=mock_conn,
         )
-        mock_conn.execute.return_value = "UPDATE 0"
-        mock_conn.fetch.return_value = []
+        # _run_worker를 mock하여 백그라운드 태스크 방지
+        mocker.patch.object(runner, "_run_worker", new_callable=AsyncMock)
 
         result = await runner.run(announcements=[])
-        assert result["status"] == "no_items"
-        assert runner._running is False
+        assert result["status"] == "accepted"
+        assert result["saved"] == 0
+        assert result["skipped"] == 0
 
-    async def test_pr04_full_flow(self, runner, mocker, mock_conn,
-                                   sample_db_row, sample_analyzed_row):
-        """PR-04: 정상 흐름 (저장 → 복구 → 재시도 → 분석 → 전송)"""
+    async def test_pr04_save_and_accept(self, runner, mocker, mock_conn):
+        """PR-04: 정상 저장 → accepted, saved=1"""
         mocker.patch(
             "class_lib.pipeline_runner.pipeline_runner.asyncpg.connect",
             new_callable=AsyncMock,
             return_value=mock_conn,
         )
-        mocker.patch.object(
-            runner, "_save_announcements",
-            new_callable=AsyncMock, return_value=(1, 0),
-        )
-        mocker.patch.object(
-            runner, "_recover_stuck",
-            new_callable=AsyncMock, return_value=0,
-        )
-        mocker.patch.object(
-            runner, "_retry_failed",
-            new_callable=AsyncMock, return_value=0,
-        )
+        mock_conn.execute.return_value = "INSERT 0 1"
+        # _run_worker를 mock하여 백그라운드 태스크 방지
+        mocker.patch.object(runner, "_run_worker", new_callable=AsyncMock)
 
-        async def mock_fetch(conn, status):
-            if status == "collected":
-                return [sample_db_row]
-            if status == "analyzed":
-                return [sample_analyzed_row]
-            return []
-        mocker.patch.object(runner, "_fetch_by_status", side_effect=mock_fetch)
-
-        mocker.patch.object(
-            runner, "_analyze_one",
-            new_callable=AsyncMock,
-            return_value={"category": "스포츠_데이터"},
-        )
-        mocker.patch.object(
-            runner, "_send_batch",
-            new_callable=AsyncMock, return_value=1,
-        )
-
-        result = await runner.run(
-            announcements=[{"bid_notice_no": "TEST-001"}],
-        )
-        assert result["status"] == "completed"
+        result = await runner.run(announcements=[{
+            "bid_notice_no": "TEST-001",
+            "bid_notice_nm": "테스트 공고",
+        }])
+        assert result["status"] == "accepted"
         assert result["saved"] == 1
-        assert result["analyzed"] == 1
-        assert result["sent"] == 1
-        assert result["duration_ms"] >= 0
-        assert runner._running is False
 
     async def test_pr05_error(self, runner, mocker):
-        """PR-05: DB 연결 예외 → error, _running 리셋"""
+        """PR-05: DB 연결 예외 → error"""
         mocker.patch(
             "class_lib.pipeline_runner.pipeline_runner.asyncpg.connect",
             new_callable=AsyncMock,
             side_effect=ConnectionError("DB 연결 실패"),
         )
 
-        result = await runner.run()
+        result = await runner.run(announcements=[{
+            "bid_notice_no": "TEST-001",
+            "bid_notice_nm": "테스트",
+        }])
         assert result["status"] == "error"
-        assert runner._running is False
 
 
 # ============================================================
-# PR-06~08: _save_announcements
+# PR-06~08: repository.save_announcements
 # ============================================================
 
 
 class TestSaveAnnouncements:
-    @pytest.fixture
-    def runner(self):
-        return PipelineRunner()
-
-    async def test_pr06_insert_new(self, runner, mock_conn, sample_filtered):
+    async def test_pr06_insert_new(self, mock_conn, sample_filtered):
         """PR-06: 신규 INSERT → saved=1, skipped=0"""
         mock_conn.execute = AsyncMock(return_value="INSERT 0 1")
 
-        saved, skipped = await runner._save_announcements(
+        saved, skipped = await repository.save_announcements(
             mock_conn, [sample_filtered],
         )
         assert saved == 1
         assert skipped == 0
 
-    async def test_pr07_duplicate_skip(self, runner, mock_conn, sample_filtered):
+    async def test_pr07_duplicate_skip(self, mock_conn, sample_filtered):
         """PR-07: 중복 SKIP → saved=0, skipped=1"""
         mock_conn.execute = AsyncMock(return_value="INSERT 0 0")
 
-        saved, skipped = await runner._save_announcements(
+        saved, skipped = await repository.save_announcements(
             mock_conn, [sample_filtered],
         )
         assert saved == 0
         assert skipped == 1
 
-    async def test_pr08_mixed(self, runner, mock_conn):
+    async def test_pr08_mixed(self, mock_conn):
         """PR-08: 혼합 (신규 1 + 중복 1) → saved=1, skipped=1"""
         mock_conn.execute = AsyncMock(
             side_effect=["INSERT 0 1", "INSERT 0 0"],
@@ -159,13 +146,13 @@ class TestSaveAnnouncements:
             {"bid_notice_no": "DUP-001", "bid_notice_nm": "중복 공고"},
         ]
 
-        saved, skipped = await runner._save_announcements(mock_conn, items)
+        saved, skipped = await repository.save_announcements(mock_conn, items)
         assert saved == 1
         assert skipped == 1
 
 
 # ============================================================
-# PR-09~11: _analyze_one
+# PR-09~11: _download_attachments (v2: replaces _analyze_one)
 # ============================================================
 
 
@@ -174,9 +161,11 @@ def _mock_httpx_success(mocker, response_json):
     mock_response = MagicMock()
     mock_response.json.return_value = response_json
     mock_response.raise_for_status = MagicMock()
+    mock_response.content = b"fake file content"
 
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.get = AsyncMock(return_value=mock_response)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -191,6 +180,7 @@ def _mock_httpx_error(mocker, error):
     """httpx AsyncClient mock — 에러 발생"""
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(side_effect=error)
+    mock_client.get = AsyncMock(side_effect=error)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -201,193 +191,168 @@ def _mock_httpx_error(mocker, error):
     return mock_client
 
 
-class TestAnalyzeOne:
+class TestDownloadAttachments:
     @pytest.fixture
     def runner(self):
         return PipelineRunner()
 
-    async def test_pr09_success(self, runner, mocker, mock_conn, sample_db_row):
-        """PR-09: 분석 성공 → analyzing → analyzed 상태 전이"""
-        analysis = {"category": "스포츠_데이터", "relevance_score": 85}
-        _mock_httpx_success(mocker, analysis)
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
+    async def test_pr09_no_urls(self, runner):
+        """PR-09: 첨부파일 URL 없음 → 스킵"""
+        announcement = {"bid_notice_no": "TEST-001", "attachment_urls": []}
+        # Should not raise
+        await runner._download_attachments(announcement)
 
-        result = await runner._analyze_one(mock_conn, sample_db_row)
-
-        assert result == analysis
-        calls = runner._update_status.call_args_list
-        assert calls[0].args[2]["pipeline_status"] == "analyzing"
-        assert calls[1].args[2]["pipeline_status"] == "analyzed"
-
-    async def test_pr10_http_error(self, runner, mocker, mock_conn, sample_db_row):
-        """PR-10: HTTP 에러 → analyze_failed, retry_count 증가"""
-        _mock_httpx_error(
-            mocker,
-            httpx.RequestError("Connection refused"),
+    async def test_pr10_download_success(self, runner, mocker, tmp_path):
+        """PR-10: 첨부파일 다운로드 성공"""
+        mocker.patch(
+            "class_lib.pipeline_runner.pipeline_runner.ATTACHMENTS_BASE_DIR",
+            tmp_path,
         )
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
+        mock_response = MagicMock()
+        mock_response.content = b"PDF content"
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {
+            "content-disposition": "attachment;filename=spec.pdf"
+        }
 
-        result = await runner._analyze_one(mock_conn, sample_db_row)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        assert result is None
-        calls = runner._update_status.call_args_list
-        assert calls[1].args[2]["pipeline_status"] == "analyze_failed"
-        assert calls[1].args[2]["retry_count_increment"] is True
+        mocker.patch(
+            "class_lib.pipeline_runner.pipeline_runner.httpx.AsyncClient",
+            return_value=mock_client,
+        )
 
-    async def test_pr11_unexpected_exception(self, runner, mocker, mock_conn,
-                                              sample_db_row):
-        """PR-11: 예상치 못한 예외 → analyze_failed"""
-        _mock_httpx_error(mocker, RuntimeError("예상치 못한 에러"))
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
+        announcement = {
+            "bid_notice_no": "TEST-001",
+            "attachment_urls": ["https://example.com/spec.pdf"],
+        }
+        await runner._download_attachments(announcement)
 
-        result = await runner._analyze_one(mock_conn, sample_db_row)
+        downloaded = tmp_path / "TEST-001" / "spec.pdf"
+        assert downloaded.exists()
+        assert downloaded.read_bytes() == b"PDF content"
 
-        assert result is None
-        calls = runner._update_status.call_args_list
-        assert calls[1].args[2]["pipeline_status"] == "analyze_failed"
+    async def test_pr11_download_failure_graceful(self, runner, mocker, tmp_path):
+        """PR-11: 첨부파일 다운로드 실패 → 경고만, 예외 전파 없음"""
+        mocker.patch(
+            "class_lib.pipeline_runner.pipeline_runner.ATTACHMENTS_BASE_DIR",
+            tmp_path,
+        )
+        _mock_httpx_error(mocker, httpx.RequestError("Connection refused"))
+
+        announcement = {
+            "bid_notice_no": "TEST-001",
+            "attachment_urls": ["https://example.com/spec.pdf"],
+        }
+        # Should not raise
+        await runner._download_attachments(announcement)
 
 
 # ============================================================
-# PR-12~15: _send_batch
+# PR-12~15: _send_one / _send_batch / _send_chunk
 # ============================================================
 
 
-class TestSendBatch:
+class TestSendOne:
     @pytest.fixture
     def runner(self):
         return PipelineRunner()
 
-    async def test_pr12_all_success(self, runner, mocker, mock_conn,
-                                     sample_analyzed_row):
-        """PR-12: 전체 성공 → sent 상태"""
+    async def test_pr12_send_success(self, runner, mocker, mock_conn, sample_db_row):
+        """PR-12: 건별 전송 성공 → sent 상태"""
         _mock_httpx_success(mocker, {
             "received": 1, "created": 1, "errors": [],
         })
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
 
-        sent = await runner._send_batch(mock_conn, [sample_analyzed_row])
-        assert sent == 1
+        success = await runner._send_one(mock_conn, sample_db_row)
+        assert success is True
 
-    async def test_pr13_partial_failure(self, runner, mocker, mock_conn,
-                                         make_db_row):
-        """PR-13: 부분 실패 → sent/send_failed 혼합"""
-        row_ok = make_db_row(
-            bid_notice_no="OK-001", pipeline_status="analyzed",
-            analysis_result={"category": "test"},
-        )
-        row_fail = make_db_row(
-            bid_notice_no="FAIL-001", pipeline_status="analyzed",
-            analysis_result={"category": "test"},
-        )
-        _mock_httpx_success(mocker, {
-            "received": 2,
-            "created": 1,
-            "errors": [{"bid_notice_no": "FAIL-001", "error": "duplicate"}],
-        })
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
+        # update_status 호출 확인 (sending → sent)
+        calls = mock_conn.execute.call_args_list
+        assert len(calls) >= 2  # sending + sent
 
-        sent = await runner._send_batch(mock_conn, [row_ok, row_fail])
-        assert sent == 1
-
-        statuses = [
-            call.args[2]["pipeline_status"]
-            for call in runner._update_status.call_args_list
-        ]
-        assert "sent" in statuses
-        assert "send_failed" in statuses
-
-    async def test_pr14_total_failure(self, runner, mocker, mock_conn,
-                                       sample_analyzed_row):
-        """PR-14: EC2 전송 전체 실패 → send_failed"""
+    async def test_pr13_send_http_error(self, runner, mocker, mock_conn, sample_db_row):
+        """PR-13: HTTP 에러 → send_failed"""
         _mock_httpx_error(mocker, httpx.RequestError("Connection refused"))
-        mocker.patch.object(runner, "_update_status", new_callable=AsyncMock)
 
-        sent = await runner._send_batch(mock_conn, [sample_analyzed_row])
-        assert sent == 0
+        success = await runner._send_one(mock_conn, sample_db_row)
+        assert success is False
 
-        calls = runner._update_status.call_args_list
-        assert calls[0].args[2]["pipeline_status"] == "send_failed"
+    async def test_pr14_send_unexpected_error(self, runner, mocker, mock_conn,
+                                                sample_db_row):
+        """PR-14: 예상치 못한 예외 → send_failed"""
+        _mock_httpx_error(mocker, RuntimeError("예상치 못한 에러"))
 
-    async def test_pr15_empty_list(self, runner, mock_conn):
-        """PR-15: 빈 리스트 → 0 반환, DB 호출 없음"""
+        success = await runner._send_one(mock_conn, sample_db_row)
+        assert success is False
+
+    async def test_pr15_send_batch_empty(self, runner, mock_conn):
+        """PR-15: 빈 리스트 → 0 반환"""
         sent = await runner._send_batch(mock_conn, [])
         assert sent == 0
 
 
 # ============================================================
-# PR-16~17: _recover_stuck
+# PR-16~17: repository.recover_stuck
 # ============================================================
 
 
 class TestRecoverStuck:
-    @pytest.fixture
-    def runner(self):
-        return PipelineRunner()
-
-    async def test_pr16_recover(self, runner, mock_conn):
-        """PR-16: analyzing/sending 건 복구 → 건수 반환"""
+    async def test_pr16_recover(self, mock_conn):
+        """PR-16: sending 건 복구 → 건수 반환"""
         mock_conn.execute = AsyncMock(return_value="UPDATE 2")
 
-        recovered = await runner._recover_stuck(mock_conn)
+        recovered = await repository.recover_stuck(mock_conn)
         assert recovered == 2
 
-    async def test_pr17_nothing_to_recover(self, runner, mock_conn):
+    async def test_pr17_nothing_to_recover(self, mock_conn):
         """PR-17: 복구 대상 없음 → 0"""
         mock_conn.execute = AsyncMock(return_value="UPDATE 0")
 
-        recovered = await runner._recover_stuck(mock_conn)
+        recovered = await repository.recover_stuck(mock_conn)
         assert recovered == 0
 
 
 # ============================================================
-# PR-18~20: _retry_failed
+# PR-18~20: repository.retry_failed
 # ============================================================
 
 
 class TestRetryFailed:
-    @pytest.fixture
-    def runner(self):
-        return PipelineRunner()
-
-    async def test_pr18_analyze_failed_retry(self, runner, mock_conn):
-        """PR-18: analyze_failed (retry<3) → collected 원복"""
-        mock_conn.fetch = AsyncMock(side_effect=[
-            [{"bid_notice_no": "FAIL-001",
-              "pipeline_status": "analyze_failed", "retry_count": 1}],
-            [],  # critical 대상 없음
-        ])
+    async def test_pr18_send_failed_retry(self, mock_conn):
+        """PR-18: send_failed (retry<3) → collected 원복"""
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+        mock_conn.fetch = AsyncMock(return_value=[])  # critical 대상 없음
 
-        retried = await runner._retry_failed(mock_conn)
+        retried = await repository.retry_failed(mock_conn)
         assert retried == 1
 
-    async def test_pr19_send_failed_retry(self, runner, mock_conn):
-        """PR-19: send_failed (retry<3) → analyzed 원복"""
-        mock_conn.fetch = AsyncMock(side_effect=[
-            [{"bid_notice_no": "FAIL-001",
-              "pipeline_status": "send_failed", "retry_count": 2}],
-            [],
-        ])
-        mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+    async def test_pr19_multiple_retry(self, mock_conn):
+        """PR-19: 여러 건 send_failed → collected 원복"""
+        mock_conn.execute = AsyncMock(return_value="UPDATE 3")
+        mock_conn.fetch = AsyncMock(return_value=[])
 
-        retried = await runner._retry_failed(mock_conn)
-        assert retried == 1
+        retried = await repository.retry_failed(mock_conn)
+        assert retried == 3
 
-    async def test_pr20_critical_no_retry(self, runner, mock_conn):
+    async def test_pr20_critical_no_retry(self, mock_conn):
         """PR-20: retry_count >= 3 → CRITICAL 로그, 원복하지 않음"""
-        mock_conn.fetch = AsyncMock(side_effect=[
-            [],  # 재시도 대상 없음
-            [{"bid_notice_no": "DEAD-001",
-              "pipeline_status": "analyze_failed",
-              "retry_count": 3, "error_message": "영구 실패"}],
+        mock_conn.execute = AsyncMock(return_value="UPDATE 0")
+        mock_conn.fetch = AsyncMock(return_value=[
+            {"bid_notice_no": "DEAD-001",
+             "pipeline_status": "send_failed",
+             "retry_count": 3, "error_message": "영구 실패"},
         ])
 
-        retried = await runner._retry_failed(mock_conn)
+        retried = await repository.retry_failed(mock_conn)
         assert retried == 0
 
 
 # ============================================================
-# PR-21~22: _build_payload
+# PR-21~22: _build_payload (v2: 단일 인자)
 # ============================================================
 
 
@@ -396,30 +361,23 @@ class TestBuildPayload:
     def runner(self):
         return PipelineRunner()
 
-    def test_pr21_normal_merge(self, runner, sample_db_row):
-        """PR-21: 원본 + 분석 결과 정상 병합"""
-        analysis = {
-            "category": "스포츠_데이터",
-            "relevance_score": 85,
-            "summary": "요약",
-            "requirements": ["요구사항1"],
-            "needs_research_lab": False,
-            "analysis_detail": "상세",
-        }
-
-        payload = runner._build_payload(sample_db_row, analysis)
+    def test_pr21_normal(self, runner, sample_db_row):
+        """PR-21: 원본 데이터 → 페이로드 변환"""
+        payload = runner._build_payload(sample_db_row)
         assert payload["bid_notice_no"] == "20260216001-00"
-        assert payload["category"] == "스포츠_데이터"
-        assert payload["relevance_score"] == 85
-        assert payload["summary"] == "요약"
+        assert payload["bid_notice_nm"] == "스포츠 데이터 분석 플랫폼 구축"
+        assert payload["ntce_instt_nm"] == "국민체육진흥공단"
+        assert payload["presmpt_price"] == 500_000_000
+        assert payload["attachment_urls"] == []
 
-    def test_pr22_empty_analysis(self, runner, sample_db_row):
-        """PR-22: 빈 분석 결과 → 기본값"""
-        payload = runner._build_payload(sample_db_row, {})
-        assert payload["bid_notice_no"] == "20260216001-00"
-        assert payload["category"] is None
-        assert payload["relevance_score"] == 0
-        assert payload["needs_research_lab"] is False
+    def test_pr22_minimal_data(self, runner, make_db_row):
+        """PR-22: 최소 데이터 → 기본값으로 페이로드 생성"""
+        row = make_db_row()
+        payload = runner._build_payload(row)
+        assert payload["bid_notice_no"] == "TEST-001"
+        assert payload["bid_notice_nm"] == "테스트 공고"
+        assert payload["attachment_urls"] == []
+        assert payload["collected_at"] is not None
 
 
 # ============================================================

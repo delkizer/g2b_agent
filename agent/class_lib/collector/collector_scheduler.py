@@ -9,6 +9,7 @@ APScheduler로 수집 주기를 관리하고 G2BService + KeywordFilter를 오�
 - agent/class_lib/collector/schemas.py : FilteredAnnouncement, CollectorHistory
 """
 
+import asyncio
 import time
 from datetime import datetime, timedelta
 
@@ -92,6 +93,10 @@ class CollectorScheduler:
 
             # 필터링
             filtered = self.keyword_filter.filter(announcements)
+
+            # v2: 필터 통과 공고의 첨부파일 URL 수집
+            if filtered:
+                await self._enrich_attachment_urls(filtered)
 
             # 소요 시간
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -182,6 +187,34 @@ class CollectorScheduler:
         self.scheduler.shutdown(wait=False)
         logger.info("CollectorScheduler 중지 완료")
 
+    # ─── 첨부파일 URL 수집 (v2) ──────────────────────────
+
+    async def _enrich_attachment_urls(
+        self, filtered: list[FilteredAnnouncement]
+    ) -> None:
+        """필터 통과 공고에 첨부파일 URL 추가 (in-place)
+
+        BidPublicInfoService API로 각 공고의 규격서/e발주 첨부파일 URL을 수집한다.
+        실패 시 해당 공고만 빈 리스트 유지 (다른 공고에 영향 없음).
+
+        Args:
+            filtered: FilteredAnnouncement 리스트 (in-place 수정)
+        """
+        total_urls = 0
+        for ann in filtered:
+            urls = await self.g2b_service.fetch_attachment_urls(ann.bid_notice_no)
+            if urls:
+                ann.attachment_urls = urls
+                total_urls += len(urls)
+            # Rate limit (API 호출 간 0.3초 대기)
+            await asyncio.sleep(0.3)
+
+        if total_urls > 0:
+            logger.info(
+                f"첨부파일 URL 수집 완료: {len(filtered)}건 공고, "
+                f"총 {total_urls}개 URL"
+            )
+
     # ─── Pipeline 연동 ────────────────────────────────────
 
     async def _signal_pipeline(self, filtered: list[FilteredAnnouncement]) -> None:
@@ -206,8 +239,7 @@ class CollectorScheduler:
                 logger.info(
                     f"Pipeline 전달 완료: status={result.get('status')}, "
                     f"saved={result.get('saved', 0)}, "
-                    f"analyzed={result.get('analyzed', 0)}, "
-                    f"sent={result.get('sent', 0)}"
+                    f"skipped={result.get('skipped', 0)}"
                 )
         except httpx.HTTPStatusError as e:
             logger.warning(f"Pipeline API HTTP 에러 ({e.response.status_code}): {e}")

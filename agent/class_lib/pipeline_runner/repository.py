@@ -47,7 +47,10 @@ async def ensure_tables(conn: asyncpg.Connection) -> None:
             -- 필터 메타데이터
             filter_meta         JSONB DEFAULT '{}',
 
-            -- 분석 결과 (Claude API)
+            -- 첨부파일 URL (v2)
+            attachment_urls     JSONB DEFAULT '[]',
+
+            -- 분석 결과 (v2: deprecated — 기존 데이터 호환용 유지)
             analysis_result     JSONB,
 
             -- 파이프라인 상태
@@ -62,12 +65,12 @@ async def ensure_tables(conn: asyncpg.Connection) -> None:
             created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-            -- 제약조건
+            -- 제약조건 (v2: analyzing/analyzed/analyze_failed 제거)
             CONSTRAINT ck_pipeline_status CHECK (
                 pipeline_status IN (
-                    'collected', 'analyzing', 'analyzed',
+                    'collected',
                     'sending', 'sent',
-                    'analyze_failed', 'send_failed'
+                    'send_failed'
                 )
             ),
             CONSTRAINT ck_retry_count CHECK (retry_count >= 0)
@@ -88,7 +91,7 @@ async def ensure_tables(conn: asyncpg.Connection) -> None:
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_ca_status_retry
             ON g2b.collected_announcements(pipeline_status, retry_count)
-            WHERE pipeline_status IN ('analyze_failed', 'send_failed');
+            WHERE pipeline_status IN ('send_failed');
     """)
 
     # 2.3 updated_at 자동 갱신 트리거
@@ -138,9 +141,11 @@ async def save_announcements(
             INSERT INTO g2b.collected_announcements (
                 bid_notice_no, bid_notice_nm, ntce_instt_nm, dminstt_nm,
                 presmpt_price, bid_begin_dt, bid_close_dt, link_url,
-                raw_data, filter_meta, pipeline_status, collected_at
+                raw_data, filter_meta, attachment_urls,
+                pipeline_status, collected_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'collected', $11
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                'collected', $12
             )
             ON CONFLICT (bid_notice_no) DO NOTHING;
             """,
@@ -154,6 +159,7 @@ async def save_announcements(
             ann.get("link_url", ""),
             json.dumps(ann.get("raw_data", {}), ensure_ascii=False),
             json.dumps(ann.get("filter_meta", {}), ensure_ascii=False),
+            json.dumps(ann.get("attachment_urls", []), ensure_ascii=False),
             parse_timestamptz(ann.get("collected_at")) or datetime.now(timezone.utc),
         )
         count = int(result.split()[-1])
@@ -174,37 +180,23 @@ async def fetch_by_status(conn: asyncpg.Connection, status: str) -> list[dict]:
     Returns:
         공고 행 dict 리스트
     """
-    if status == "analyzed":
-        rows = await conn.fetch(
-            """
-            SELECT id, bid_notice_no, bid_notice_nm, ntce_instt_nm, dminstt_nm,
-                   presmpt_price, bid_begin_dt, bid_close_dt, link_url,
-                   raw_data, filter_meta, analysis_result, pipeline_status,
-                   retry_count, collected_at, analyzed_at
-            FROM g2b.collected_announcements
-            WHERE pipeline_status = $1
-            ORDER BY analyzed_at ASC;
-            """,
-            status,
-        )
-    else:
-        rows = await conn.fetch(
-            """
-            SELECT id, bid_notice_no, bid_notice_nm, ntce_instt_nm, dminstt_nm,
-                   presmpt_price, bid_begin_dt, bid_close_dt, link_url,
-                   raw_data, filter_meta, pipeline_status, retry_count,
-                   collected_at
-            FROM g2b.collected_announcements
-            WHERE pipeline_status = $1
-            ORDER BY collected_at ASC;
-            """,
-            status,
-        )
+    rows = await conn.fetch(
+        """
+        SELECT id, bid_notice_no, bid_notice_nm, ntce_instt_nm, dminstt_nm,
+               presmpt_price, bid_begin_dt, bid_close_dt, link_url,
+               raw_data, filter_meta, attachment_urls, pipeline_status,
+               retry_count, collected_at, sent_at
+        FROM g2b.collected_announcements
+        WHERE pipeline_status = $1
+        ORDER BY collected_at ASC;
+        """,
+        status,
+    )
 
     result = []
     for row in rows:
         d = dict(row)
-        for jsonb_col in ("raw_data", "filter_meta", "analysis_result"):
+        for jsonb_col in ("raw_data", "filter_meta", "attachment_urls"):
             val = d.get(jsonb_col)
             if isinstance(val, str):
                 d[jsonb_col] = json.loads(val)
@@ -256,22 +248,18 @@ async def update_status(
 
 
 async def recover_stuck(conn: asyncpg.Connection) -> int:
-    """비정상 종료로 analyzing/sending에 머문 공고를 원복
+    """비정상 종료로 sending에 머문 공고를 원복
 
-    04-entry-point.md 4.4절 참조.
-    analyzing → collected, sending → analyzed
+    v2: analyzing 제거. sending → collected로 원복.
 
     Returns:
         복구된 건수
     """
     result = await conn.execute("""
         UPDATE g2b.collected_announcements
-        SET pipeline_status = CASE
-            WHEN pipeline_status = 'analyzing' THEN 'collected'
-            WHEN pipeline_status = 'sending' THEN 'analyzed'
-        END,
+        SET pipeline_status = 'collected',
         error_message = '비정상 종료 복구'
-        WHERE pipeline_status IN ('analyzing', 'sending');
+        WHERE pipeline_status = 'sending';
     """)
     count = int(result.split()[-1])
     if count > 0:
@@ -282,60 +270,27 @@ async def recover_stuck(conn: asyncpg.Connection) -> int:
 async def retry_failed(conn: asyncpg.Connection) -> int:
     """실패 건 상태 원복
 
-    원복 규칙:
-    - analyze_failed (retry_count < 3) → collected
-    - send_failed (retry_count < 3) → analyzed
+    v2 원복 규칙:
+    - send_failed (retry_count < 3) → collected
     retry_count는 원복 시 증가하지 않는다.
 
     Returns:
         원복된 건수
     """
-    retried = 0
-
-    rows = await conn.fetch("""
-        SELECT bid_notice_no, pipeline_status, retry_count
-        FROM g2b.collected_announcements
-        WHERE pipeline_status IN ('analyze_failed', 'send_failed')
+    result = await conn.execute("""
+        UPDATE g2b.collected_announcements
+        SET pipeline_status = 'collected',
+            error_message = ''
+        WHERE pipeline_status = 'send_failed'
           AND retry_count < 3;
     """)
-
-    for row in rows:
-        bid_notice_no = row["bid_notice_no"]
-        status = row["pipeline_status"]
-
-        if status == "analyze_failed":
-            await conn.execute(
-                """
-                UPDATE g2b.collected_announcements
-                SET pipeline_status = 'collected',
-                    error_message = ''
-                WHERE bid_notice_no = $1
-                  AND pipeline_status = 'analyze_failed'
-                  AND retry_count < 3;
-                """,
-                bid_notice_no,
-            )
-            retried += 1
-
-        elif status == "send_failed":
-            await conn.execute(
-                """
-                UPDATE g2b.collected_announcements
-                SET pipeline_status = 'analyzed',
-                    error_message = ''
-                WHERE bid_notice_no = $1
-                  AND pipeline_status = 'send_failed'
-                  AND retry_count < 3;
-                """,
-                bid_notice_no,
-            )
-            retried += 1
+    retried = int(result.split()[-1])
 
     # 최종 실패 건 CRITICAL 로그
     critical_rows = await conn.fetch("""
         SELECT bid_notice_no, pipeline_status, retry_count, error_message
         FROM g2b.collected_announcements
-        WHERE pipeline_status IN ('analyze_failed', 'send_failed')
+        WHERE pipeline_status = 'send_failed'
           AND retry_count >= 3;
     """)
 

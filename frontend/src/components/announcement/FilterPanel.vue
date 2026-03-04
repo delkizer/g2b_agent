@@ -10,7 +10,7 @@ const emit = defineEmits<{
   reset: []
 }>()
 
-const categories = ['스포츠', '영상분석', 'AI/데이터', '미디어', '플랫폼', '기타']
+const categories = ['스포츠', '영상분석', 'AI/데이터', '미디어', 'CCTV', '플랫폼', '기타']
 const statuses = [
   { value: '', label: '전체' },
   { value: 'pending', label: '대기' },
@@ -19,6 +19,12 @@ const statuses = [
   { value: 'bidding', label: '입찰준비' },
   { value: 'excluded', label: '제외' },
   { value: 'archived', label: '종료' },
+]
+
+const deadlines = [
+  { value: '', label: '전체' },
+  { value: 'active', label: '진행중' },
+  { value: 'closed', label: '마감' },
 ]
 
 function updateFilter<K extends keyof FilterParams>(key: K, value: FilterParams[K]) {
@@ -39,7 +45,7 @@ function toggleCategory(cat: string) {
 
 <template>
   <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
       <!-- 카테고리 멀티셀렉트 -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">카테고리</label>
@@ -85,6 +91,18 @@ function toggleCategory(cat: string) {
           @change="updateFilter('status', ($event.target as HTMLSelectElement).value as any)"
         >
           <option v-for="s in statuses" :key="s.value" :value="s.value">{{ s.label }}</option>
+        </select>
+      </div>
+
+      <!-- 마감 여부 -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">마감 여부</label>
+        <select
+          :value="filters.deadline"
+          class="w-full rounded-md border-gray-300 text-sm"
+          @change="updateFilter('deadline', ($event.target as HTMLSelectElement).value as any)"
+        >
+          <option v-for="d in deadlines" :key="d.value" :value="d.value">{{ d.label }}</option>
         </select>
       </div>
 

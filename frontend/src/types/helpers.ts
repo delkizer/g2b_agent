@@ -9,4 +9,4 @@ export type MonthlyTrendItem = components['schemas']['MonthlyTrendItem']
 
 // 프론트엔드 전용 파생 타입
 export type AnnouncementStatus = 'pending' | 'analyzed' | 'reviewing' | 'bidding' | 'excluded' | 'archived'
-export type AnnouncementCategory = '스포츠' | '영상분석' | 'AI/데이터' | '미디어' | '플랫폼' | '기타'
+export type AnnouncementCategory = string

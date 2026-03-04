@@ -31,8 +31,9 @@ class Announcement(Base):
     bid_close_dt = Column(DateTime(timezone=True), comment="입찰마감일시")
     link_url = Column(Text, comment="나라장터 원문 링크")
     raw_data = Column(JSONB, comment="나라장터 원본 JSON")
+    attachment_urls = Column(JSONB, comment="v2: 첨부파일 URL 목록")
 
-    # ── 분석 결과 (Claude API) ────────────────────────────
+    # ── 분석 결과 (v2: Cowork에서 MCP PATCH로 채움) ────────
     category = Column(String(50), comment="분류")
     relevance_score = Column(SmallInteger, nullable=False, default=0,
                              server_default="0",
@@ -65,10 +66,6 @@ class Announcement(Base):
         CheckConstraint(
             "status IN ('pending', 'analyzed', 'reviewing', 'bidding', 'excluded', 'archived')",
             name="ck_announcements_status",
-        ),
-        CheckConstraint(
-            "category IS NULL OR category IN ('스포츠', '영상분석', 'AI/데이터', '미디어', '플랫폼', '기타')",
-            name="ck_announcements_category",
         ),
         Index("idx_announcements_category", "category"),
         Index("idx_announcements_score", relevance_score.desc()),
