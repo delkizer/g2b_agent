@@ -9,6 +9,7 @@ const emit = defineEmits<{
 }>()
 
 const sortOptions = [
+  { value: 'bid_begin_dt:desc', label: '공고일순' },
   { value: 'relevance_score:desc', label: '적합성 높은순' },
   { value: 'relevance_score:asc', label: '적합성 낮은순' },
   { value: 'bid_close_dt:asc', label: '마감일 임박순' },

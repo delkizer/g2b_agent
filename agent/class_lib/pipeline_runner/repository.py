@@ -120,6 +120,190 @@ async def ensure_tables(conn: asyncpg.Connection) -> None:
     logger.info("DB 테이블 확인 완료 (g2b.collected_announcements)")
 
 
+async def ensure_announcements_table(conn: asyncpg.Connection) -> None:
+    """g2b.announcements 테이블 DDL (서버 모델과 동일, IF NOT EXISTS)
+
+    server/models/announcement.py 컬럼 정의와 일치.
+    """
+    await conn.execute("CREATE SCHEMA IF NOT EXISTS g2b;")
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS g2b.announcements (
+            id                  SERIAL PRIMARY KEY,
+            bid_notice_no       VARCHAR(50) NOT NULL UNIQUE,
+
+            -- 원본 데이터 (나라장터 API)
+            bid_notice_nm       TEXT NOT NULL,
+            ntce_instt_nm       VARCHAR(200),
+            dminstt_nm          VARCHAR(200),
+            presmpt_price       BIGINT,
+            bid_begin_dt        TIMESTAMPTZ,
+            bid_close_dt        TIMESTAMPTZ,
+            link_url            TEXT,
+            raw_data            JSONB,
+            attachment_urls     JSONB,
+
+            -- 분석 결과 (Cowork에서 MCP PATCH로 채움)
+            category            VARCHAR(50),
+            relevance_score     SMALLINT NOT NULL DEFAULT 0,
+            summary             TEXT,
+            requirements        TEXT,
+            needs_research_lab  BOOLEAN NOT NULL DEFAULT FALSE,
+            analysis_detail     JSONB,
+
+            -- 시스템
+            status              VARCHAR(20) NOT NULL DEFAULT 'pending',
+            notion_page_id      VARCHAR(100),
+            collected_at        TIMESTAMPTZ,
+            analyzed_at         TIMESTAMPTZ,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+            CONSTRAINT ck_announcements_relevance_score
+                CHECK (relevance_score >= 0 AND relevance_score <= 100),
+            CONSTRAINT ck_announcements_status
+                CHECK (status IN (
+                    'pending', 'analyzed', 'reviewing',
+                    'bidding', 'excluded', 'archived'
+                ))
+        );
+    """)
+
+    # 인덱스
+    for ddl in [
+        "CREATE INDEX IF NOT EXISTS idx_announcements_category ON g2b.announcements(category);",
+        "CREATE INDEX IF NOT EXISTS idx_announcements_score ON g2b.announcements(relevance_score DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_announcements_status ON g2b.announcements(status);",
+        "CREATE INDEX IF NOT EXISTS idx_announcements_bid_close ON g2b.announcements(bid_close_dt);",
+        "CREATE INDEX IF NOT EXISTS idx_announcements_collected ON g2b.announcements(collected_at);",
+        "CREATE INDEX IF NOT EXISTS idx_announcements_status_score ON g2b.announcements(status, relevance_score DESC);",
+    ]:
+        await conn.execute(ddl)
+
+    # updated_at 트리거 (g2b.update_updated_at 함수는 ensure_tables에서 생성됨)
+    await conn.execute("""
+        DROP TRIGGER IF EXISTS trg_ann_updated_at ON g2b.announcements;
+    """)
+    await conn.execute("""
+        CREATE TRIGGER trg_ann_updated_at
+            BEFORE UPDATE ON g2b.announcements
+            FOR EACH ROW
+            EXECUTE FUNCTION g2b.update_updated_at();
+    """)
+
+    logger.info("DB 테이블 확인 완료 (g2b.announcements)")
+
+
+async def ensure_ec2_sync_log_table(conn: asyncpg.Connection) -> None:
+    """EC2 동기화 추적 테이블 DDL"""
+    await conn.execute("CREATE SCHEMA IF NOT EXISTS g2b;")
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS g2b.ec2_sync_log (
+            bid_notice_no   VARCHAR(50) PRIMARY KEY,
+            synced_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+
+    logger.info("DB 테이블 확인 완료 (g2b.ec2_sync_log)")
+
+
+# ── g2b.announcements 저장/조회 ─────────────────────────
+
+
+async def upsert_to_announcements(
+    conn: asyncpg.Connection, announcement: dict
+) -> bool:
+    """collected_announcements row → g2b.announcements upsert
+
+    분석 필드(category, relevance_score, summary 등)와 status는 덮어쓰지 않는다.
+
+    Returns:
+        True (INSERT/UPDATE 성공)
+    """
+    result = await conn.execute(
+        """
+        INSERT INTO g2b.announcements (
+            bid_notice_no, bid_notice_nm, ntce_instt_nm, dminstt_nm,
+            presmpt_price, bid_begin_dt, bid_close_dt, link_url,
+            raw_data, attachment_urls, collected_at, status
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending'
+        )
+        ON CONFLICT (bid_notice_no) DO UPDATE SET
+            bid_notice_nm   = EXCLUDED.bid_notice_nm,
+            ntce_instt_nm   = EXCLUDED.ntce_instt_nm,
+            dminstt_nm      = EXCLUDED.dminstt_nm,
+            presmpt_price   = EXCLUDED.presmpt_price,
+            bid_begin_dt    = EXCLUDED.bid_begin_dt,
+            bid_close_dt    = EXCLUDED.bid_close_dt,
+            link_url        = EXCLUDED.link_url,
+            raw_data        = EXCLUDED.raw_data,
+            attachment_urls = EXCLUDED.attachment_urls,
+            collected_at    = EXCLUDED.collected_at;
+        """,
+        announcement.get("bid_notice_no", ""),
+        announcement.get("bid_notice_nm", ""),
+        announcement.get("ntce_instt_nm", ""),
+        announcement.get("dminstt_nm", ""),
+        announcement.get("presmpt_price", 0),
+        announcement.get("bid_begin_dt"),
+        announcement.get("bid_close_dt"),
+        announcement.get("link_url", ""),
+        json.dumps(announcement.get("raw_data", {}), ensure_ascii=False),
+        json.dumps(announcement.get("attachment_urls", []), ensure_ascii=False),
+        announcement.get("collected_at") or datetime.now(timezone.utc),
+    )
+    return True
+
+
+async def fetch_for_ec2_sync(
+    conn: asyncpg.Connection, limit: int = 500
+) -> list[dict]:
+    """EC2 미동기화 또는 갱신된 공고 조회
+
+    Returns:
+        announcements row dict 리스트
+    """
+    rows = await conn.fetch(
+        """
+        SELECT a.* FROM g2b.announcements a
+        LEFT JOIN g2b.ec2_sync_log s ON a.bid_notice_no = s.bid_notice_no
+        WHERE s.bid_notice_no IS NULL OR a.updated_at > s.synced_at
+        ORDER BY a.updated_at ASC
+        LIMIT $1;
+        """,
+        limit,
+    )
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        for jsonb_col in ("raw_data", "attachment_urls", "analysis_detail"):
+            val = d.get(jsonb_col)
+            if isinstance(val, str):
+                d[jsonb_col] = json.loads(val)
+        result.append(d)
+    return result
+
+
+async def mark_ec2_synced(
+    conn: asyncpg.Connection, bid_notice_nos: list[str]
+) -> None:
+    """동기화 완료 기록"""
+    if not bid_notice_nos:
+        return
+
+    await conn.executemany(
+        """
+        INSERT INTO g2b.ec2_sync_log (bid_notice_no, synced_at)
+        VALUES ($1, NOW())
+        ON CONFLICT (bid_notice_no) DO UPDATE SET synced_at = NOW();
+        """,
+        [(no,) for no in bid_notice_nos],
+    )
+
+
 # ── 저장 ───────────────────────────────────────────────
 
 

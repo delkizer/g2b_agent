@@ -40,6 +40,7 @@ EXPORT_MAX_ROWS = 10_000
 
 # 정렬 가능 컬럼 매핑
 SORT_COLUMN_MAP = {
+    "bid_begin_dt": Announcement.bid_begin_dt,
     "relevance_score": Announcement.relevance_score,
     "bid_close_dt": Announcement.bid_close_dt,
     "collected_at": Announcement.collected_at,

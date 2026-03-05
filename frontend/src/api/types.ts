@@ -4,6 +4,7 @@ import type { AnnouncementStatus, AnnouncementCategory } from '@/types'
  * 정렬 가능 필드
  */
 export type SortField =
+  | 'bid_begin_dt'
   | 'relevance_score'
   | 'bid_close_dt'
   | 'collected_at'
@@ -52,11 +53,11 @@ export function createDefaultFilterParams(): FilterParams {
     category: [],
     minScore: 0,
     status: '',
-    deadline: '',
+    deadline: 'active',
     dateFrom: '',
     dateTo: '',
     search: '',
-    sort: 'created_at',
+    sort: 'bid_begin_dt',
     order: 'desc',
     page: 1,
     size: 20,

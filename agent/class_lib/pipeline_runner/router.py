@@ -1,7 +1,8 @@
 """Pipeline 도메인 — 파이프라인 API 엔드포인트
 
-/pipeline/run  — Collector가 호출 (트리거 + 저장, 즉시 응답)
-/pipeline/send — 워커/수동 호출 (EC2 전송)
+/pipeline/run      — Collector가 호출 (트리거 + 저장, 즉시 응답)
+/pipeline/send     — 워커/수동 호출 (로컬 저장)
+/pipeline/sync-ec2 — 로컬 → EC2 동기화
 
 PipelineRunner를 싱글톤으로 유지하여 _running 플래그가 요청 간 공유되도록 한다.
 
@@ -19,6 +20,8 @@ from class_lib.pipeline_runner.schemas import (
     PipelineRunResponse,
     PipelineSendRequest,
     PipelineSendResponse,
+    PipelineSyncRequest,
+    PipelineSyncResponse,
 )
 
 
@@ -65,7 +68,7 @@ async def run_pipeline(body: PipelineRunRequest | None = None):
     response_model=PipelineSendResponse,
 )
 async def send_to_ec2(body: PipelineSendRequest | None = None):
-    """analyzed 건 EC2 전송"""
+    """collected 건 로컬 저장"""
     runner = _get_runner()
     bid_notice_nos = body.bid_notice_nos if body else []
 
@@ -73,5 +76,25 @@ async def send_to_ec2(body: PipelineSendRequest | None = None):
         result = await runner.send(bid_notice_nos=bid_notice_nos)
         return result
     except Exception as e:
-        logger.error(f"EC2 전송 예외: {e}", exc_info=True)
+        logger.error(f"로컬 저장 예외: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@router.post(
+    "/sync-ec2",
+    summary="로컬 → EC2 동기화",
+    description="로컬 g2b.announcements 테이블의 미동기화 또는 갱신된 공고를 "
+                "EC2 서버로 동기화. limit으로 최대 건수 지정 (기본 500).",
+    response_model=PipelineSyncResponse,
+)
+async def sync_to_ec2(body: PipelineSyncRequest | None = None):
+    """로컬 → EC2 동기화"""
+    runner = _get_runner()
+    limit = body.limit if body else 500
+
+    try:
+        result = await runner.sync_ec2(limit=limit)
+        return result
+    except Exception as e:
+        logger.error(f"EC2 동기화 예외: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}

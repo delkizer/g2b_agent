@@ -25,8 +25,8 @@ export function useAnnouncements() {
     if (q.status && typeof q.status === 'string') {
       filters.status = q.status as FilterParams['status']
     }
-    if (q.deadline && typeof q.deadline === 'string') {
-      filters.deadline = q.deadline as FilterParams['deadline']
+    if (q.deadline !== undefined && typeof q.deadline === 'string') {
+      filters.deadline = (q.deadline === 'all' ? '' : q.deadline) as FilterParams['deadline']
     }
     if (q.date_from && typeof q.date_from === 'string') filters.dateFrom = q.date_from
     if (q.date_to && typeof q.date_to === 'string') filters.dateTo = q.date_to
@@ -45,11 +45,11 @@ export function useAnnouncements() {
     if (filters.category.length > 0) query.category = filters.category.join(',')
     if (filters.minScore > 0) query.min_score = String(filters.minScore)
     if (filters.status) query.status = filters.status
-    if (filters.deadline) query.deadline = filters.deadline
+    if (filters.deadline !== 'active') query.deadline = filters.deadline || 'all'
     if (filters.dateFrom) query.date_from = filters.dateFrom
     if (filters.dateTo) query.date_to = filters.dateTo
     if (filters.search) query.search = filters.search
-    if (filters.sort !== 'created_at') query.sort = filters.sort
+    if (filters.sort !== 'bid_begin_dt') query.sort = filters.sort
     if (filters.order !== 'desc') query.order = filters.order
     if (filters.page > 1) query.page = String(filters.page)
     if (filters.size !== 20) query.size = String(filters.size)

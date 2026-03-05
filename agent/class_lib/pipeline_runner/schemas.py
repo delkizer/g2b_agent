@@ -62,3 +62,20 @@ class PipelineSendResponse(BaseModel):
     failed: int = 0
     errors: list[SendError] = Field(default_factory=list)
     message: str | None = None
+
+
+# ── /pipeline/sync-ec2 ────────────────────────────────────
+
+
+class PipelineSyncRequest(BaseModel):
+    """로컬 → EC2 동기화 요청"""
+    limit: int = Field(default=500, ge=1, le=2000)
+
+
+class PipelineSyncResponse(BaseModel):
+    """로컬 → EC2 동기화 응답"""
+    status: str = Field(description="completed / no_items / error")
+    synced: int = 0
+    failed: int = 0
+    errors: list[SendError] = Field(default_factory=list)
+    message: str | None = None

@@ -163,6 +163,7 @@ class AnnouncementStatsResponse(BaseModel):
 # ── 필터 파라미터 ────────────────────────────────────────
 
 class SortField(str, Enum):
+    bid_begin_dt = "bid_begin_dt"
     relevance_score = "relevance_score"
     bid_close_dt = "bid_close_dt"
     collected_at = "collected_at"
@@ -199,7 +200,7 @@ class FilterParams(BaseModel):
         if v is not None and v not in ("active", "closed"):
             raise ValueError(f"deadline 값이 유효하지 않습니다: '{v}' (active 또는 closed)")
         return v
-    sort: SortField = Query(SortField.created_at, description="정렬 기준")
+    sort: SortField = Query(SortField.bid_begin_dt, description="정렬 기준")
     order: SortOrder = Query(SortOrder.desc, description="정렬 방향")
     page: int = Query(1, description="페이지 번호", ge=1)
     size: int = Query(20, description="페이지당 건수", ge=1, le=100)

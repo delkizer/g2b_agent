@@ -41,6 +41,11 @@ echo "환경 사전 준비 중..."
 mkdir -p ~/work/logs/g2b_server
 echo "  - 로그 디렉토리 확인: ~/work/logs/g2b_server"
 
+# 파일 저장 디렉토리 보장
+mkdir -p ~/data/g2b/attachments
+mkdir -p ~/data/g2b/output
+echo "  - 파일 저장 디렉토리 확인: ~/data/g2b/{attachments,output}"
+
 # RSA 키 자동 생성 (없으면)
 KEY_DIR=~/work/g2b_agent/server/server_env/rsa256
 if [ ! -f "$KEY_DIR/private_key.pem" ]; then

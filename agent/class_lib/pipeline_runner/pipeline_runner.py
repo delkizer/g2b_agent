@@ -1,12 +1,11 @@
-"""파이프라인 오케스트레이터 (v2 — 분석 없이 전송)
+"""파이프라인 오케스트레이터 (v3 — 로컬 우선 저장 + EC2 동기화)
 
 Collector 완료 신호(POST /api/internal/pipeline/run)를 받아:
 1. DB에 공고를 저장하고 즉시 응답 (status: accepted)
-2. 백그라운드 워커를 기동하여 첨부파일 다운로드 + EC2 전송을 비동기 처리
-3. 워커는 건별로 첨부파일 다운로드 → EC2 전송을 순차 호출
-4. 실패 건 재시도 (retry_count < 3)
+2. 백그라운드 워커를 기동하여 첨부파일 다운로드 + 로컬 announcements 저장을 비동기 처리
+3. EC2 동기화는 별도 sync_ec2() 메서드로 분리
 
-v2 변경: Analyzer API 호출 제거. 분석은 Cowork(Windows)에서 수행.
+v3 변경: EC2 직접 전송 → 로컬 g2b.announcements 저장. EC2 동기화는 별도 API.
 
 Config는 내부에서 직접 생성 (외부 주입 금지).
 Logger는 module-level import (loguru).
@@ -38,11 +37,12 @@ ATTACHMENTS_BASE_DIR = Path(
 
 
 class PipelineRunner:
-    """파이프라인 오케스트레이터 (v2 — 분석 없이 전송)
+    """파이프라인 오케스트레이터 (v3 — 로컬 저장 + EC2 동기화)
 
     run() — 저장 + 워커 기동 (즉시 응답)
-    send() — EC2 전송 (독립 API)
-    _run_worker() — 백그라운드 코루틴 (첨부파일 다운로드 + 전송 루프)
+    send() — 로컬 저장 (독립 API, 레거시 호환)
+    sync_ec2() — 로컬 → EC2 동기화
+    _run_worker() — 백그라운드 코루틴 (첨부파일 다운로드 + 로컬 저장 루프)
     """
 
     def __init__(self):
@@ -87,11 +87,11 @@ class PipelineRunner:
         return {"status": "accepted", "saved": saved, "skipped": skipped}
 
     async def send(self, bid_notice_nos: list[str] | None = None) -> dict:
-        """EC2 전송 — collected 건을 건별로 EC2로 전송
+        """로컬 저장 — collected 건을 건별로 g2b.announcements에 저장
 
         Args:
-            bid_notice_nos: 전송 대상 공고번호 리스트.
-                           빈 리스트면 collected 전체 전송.
+            bid_notice_nos: 저장 대상 공고번호 리스트.
+                           빈 리스트면 collected 전체 저장.
 
         Returns:
             {"status": "completed", "sent": N, "failed": N, "errors": [...]}
@@ -110,18 +110,18 @@ class PipelineRunner:
             if not items:
                 return {"status": "no_items", "sent": 0, "failed": 0, "errors": []}
 
-            logger.info(f"EC2 건별 전송 시작: {len(items)}건")
+            logger.info(f"로컬 저장 시작: {len(items)}건")
             sent_count = 0
             failed_count = 0
 
             for item in items:
-                success = await self._send_one(conn, item)
+                success = await self._save_to_local(conn, item)
                 if success:
                     sent_count += 1
                 else:
                     failed_count += 1
 
-            logger.info(f"EC2 전송 완료: sent={sent_count}, failed={failed_count}")
+            logger.info(f"로컬 저장 완료: sent={sent_count}, failed={failed_count}")
             return {
                 "status": "completed",
                 "sent": sent_count,
@@ -129,17 +129,24 @@ class PipelineRunner:
                 "errors": [],
             }
         except Exception as e:
-            logger.error(f"EC2 전송 중 예외: {e}", exc_info=True)
+            logger.error(f"로컬 저장 중 예외: {e}", exc_info=True)
             return {"status": "error", "sent": 0, "failed": 0, "message": str(e)}
         finally:
             await conn.close()
 
     async def ensure_tables(self) -> None:
-        """collected_announcements 테이블 생성 (IF NOT EXISTS)"""
+        """전체 테이블 생성 (IF NOT EXISTS)
+
+        - g2b.collected_announcements
+        - g2b.announcements
+        - g2b.ec2_sync_log
+        """
         try:
             conn = await asyncpg.connect(self.config.database_url)
             try:
                 await repository.ensure_tables(conn)
+                await repository.ensure_announcements_table(conn)
+                await repository.ensure_ec2_sync_log_table(conn)
             finally:
                 await conn.close()
         except Exception as e:
@@ -182,15 +189,15 @@ class PipelineRunner:
                     logger.info("전송 대상 공고 없음")
                     return
 
-                logger.info(f"전송 대상: {len(items)}건")
+                logger.info(f"저장 대상: {len(items)}건")
 
-                # 3. 건별 순차: 첨부파일 다운로드 → EC2 전송
+                # 3. 건별 순차: 첨부파일 다운로드 → 로컬 저장
                 for item in items:
-                    # 첨부파일 다운로드 (실패해도 전송 진행)
+                    # 첨부파일 다운로드 (실패해도 저장 진행)
                     await self._download_attachments(item)
 
-                    # EC2 전송
-                    success = await self._send_one(conn, item)
+                    # 로컬 announcements 저장
+                    success = await self._save_to_local(conn, item)
                     if success:
                         sent_count += 1
                     else:
@@ -290,30 +297,25 @@ class PipelineRunner:
 
         return f"attachment_{idx + 1}.bin"
 
-    # ── EC2 전송 ─────────────────────────────────────
+    # ── 로컬 저장 ───────────────────────────────────────
 
-    async def _send_one(self, conn, announcement: dict) -> bool:
-        """단건 EC2 전송 (v2: 미분석 원본 전송)
+    async def _save_to_local(self, conn, announcement: dict) -> bool:
+        """단건 로컬 g2b.announcements 저장
+
+        collected_announcements → announcements upsert.
+        분석 필드(category, relevance_score 등)와 status는 덮어쓰지 않는다.
 
         Returns:
             True (성공) / False (실패)
         """
         bid_notice_no = announcement["bid_notice_no"]
-        payload = self._build_payload(announcement)
 
         await repository.update_status(conn, bid_notice_no, {
             "pipeline_status": "sending",
         })
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.config.ec2_api_url}/api/announcements/batch",
-                    json={"announcements": [payload]},
-                    headers={"X-API-Key": self.config.ec2_api_key},
-                    timeout=30.0,
-                )
-                response.raise_for_status()
+            await repository.upsert_to_announcements(conn, announcement)
 
             now = datetime.now(timezone.utc)
             await repository.update_status(conn, bid_notice_no, {
@@ -321,18 +323,8 @@ class PipelineRunner:
                 "sent_at": now,
                 "error_message": "",
             })
-            logger.debug(f"EC2 전송 성공: {bid_notice_no}")
+            logger.debug(f"로컬 저장 성공: {bid_notice_no}")
             return True
-
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            error_msg = str(e)[:500]
-            await repository.update_status(conn, bid_notice_no, {
-                "pipeline_status": "send_failed",
-                "error_message": error_msg,
-                "retry_count_increment": True,
-            })
-            logger.warning(f"EC2 전송 실패: {bid_notice_no} - {error_msg}")
-            return False
 
         except Exception as e:
             error_msg = str(e)[:500]
@@ -342,9 +334,108 @@ class PipelineRunner:
                 "retry_count_increment": True,
             })
             logger.error(
-                f"EC2 전송 중 예외: {bid_notice_no} - {error_msg}", exc_info=True
+                f"로컬 저장 실패: {bid_notice_no} - {error_msg}", exc_info=True
             )
             return False
+
+    # ── EC2 동기화 ─────────────────────────────────────
+
+    async def sync_ec2(self, limit: int = 500) -> dict:
+        """로컬 g2b.announcements → EC2 동기화
+
+        1. fetch_for_ec2_sync() — 미동기화 공고 조회
+        2. 20건 청크로 분할
+        3. 청크별 HTTP POST /api/announcements/batch
+        4. 성공 건 mark_ec2_synced()
+
+        Returns:
+            {"status": ..., "synced": N, "failed": N, "errors": [...]}
+        """
+        conn = await asyncpg.connect(self.config.database_url)
+        try:
+            items = await repository.fetch_for_ec2_sync(conn, limit=limit)
+            if not items:
+                logger.info("EC2 동기화 대상 없음")
+                return {"status": "no_items", "synced": 0, "failed": 0, "errors": []}
+
+            logger.info(f"EC2 동기화 시작: {len(items)}건")
+            synced_total = 0
+            failed_total = 0
+            errors = []
+
+            for i in range(0, len(items), self.SEND_BATCH_SIZE):
+                chunk = items[i:i + self.SEND_BATCH_SIZE]
+                payloads = [self._build_sync_payload(row) for row in chunk]
+
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            f"{self.config.ec2_api_url}/api/announcements/batch",
+                            json={"announcements": payloads},
+                            headers={"X-API-Key": self.config.ec2_api_key},
+                            timeout=30.0,
+                        )
+                        response.raise_for_status()
+                        resp_body = response.json()
+
+                    resp_errors = resp_body.get("errors", [])
+                    error_nos = {e["bid_notice_no"] for e in resp_errors}
+
+                    synced_nos = [
+                        row["bid_notice_no"] for row in chunk
+                        if row["bid_notice_no"] not in error_nos
+                    ]
+
+                    if synced_nos:
+                        await repository.mark_ec2_synced(conn, synced_nos)
+                        synced_total += len(synced_nos)
+
+                    failed_total += len(error_nos)
+                    errors.extend(resp_errors)
+
+                except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                    error_msg = str(e)[:500]
+                    logger.error(f"EC2 동기화 청크 실패 ({len(chunk)}건): {error_msg}")
+                    failed_total += len(chunk)
+                    for row in chunk:
+                        errors.append({
+                            "bid_notice_no": row["bid_notice_no"],
+                            "error": error_msg,
+                        })
+
+                except Exception as e:
+                    error_msg = str(e)[:500]
+                    logger.error(
+                        f"EC2 동기화 청크 예외 ({len(chunk)}건): {error_msg}",
+                        exc_info=True,
+                    )
+                    failed_total += len(chunk)
+                    for row in chunk:
+                        errors.append({
+                            "bid_notice_no": row["bid_notice_no"],
+                            "error": error_msg,
+                        })
+
+            logger.info(
+                f"EC2 동기화 완료: synced={synced_total}, failed={failed_total}"
+            )
+            return {
+                "status": "completed",
+                "synced": synced_total,
+                "failed": failed_total,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            logger.error(f"EC2 동기화 중 예외: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "synced": 0,
+                "failed": 0,
+                "message": str(e),
+            }
+        finally:
+            await conn.close()
 
     SEND_BATCH_SIZE = 20  # 청크당 최대 건수
 
@@ -451,7 +542,7 @@ class PipelineRunner:
     # ── 페이로드 ─────────────────────────────────────
 
     def _build_payload(self, announcement: dict) -> dict:
-        """원본 데이터 → AnalyzedAnnouncement 스키마 변환 (v2: 분석 결과 없이)
+        """원본 데이터 → AnalyzedAnnouncement 스키마 변환 (분석 결과 없이)
 
         분석 필드는 비워서 전송. Cowork가 MCP PATCH로 나중에 채움.
         """
@@ -468,3 +559,37 @@ class PipelineRunner:
             "attachment_urls": announcement.get("attachment_urls", []),
             "collected_at": serialize_dt(announcement.get("collected_at")),
         }
+
+    def _build_sync_payload(self, row: dict) -> dict:
+        """g2b.announcements row → batch API payload 변환 (분석 필드 포함)"""
+        payload = {
+            "bid_notice_no": row["bid_notice_no"],
+            "bid_notice_nm": row["bid_notice_nm"],
+            "ntce_instt_nm": row.get("ntce_instt_nm"),
+            "dminstt_nm": row.get("dminstt_nm"),
+            "presmpt_price": row.get("presmpt_price"),
+            "bid_begin_dt": serialize_dt(row.get("bid_begin_dt")),
+            "bid_close_dt": serialize_dt(row.get("bid_close_dt")),
+            "link_url": row.get("link_url"),
+            "raw_data": row.get("raw_data"),
+            "attachment_urls": row.get("attachment_urls", []),
+            "collected_at": serialize_dt(row.get("collected_at")),
+        }
+
+        # 분석 필드 (존재하면 포함)
+        if row.get("category"):
+            payload["category"] = row["category"]
+        if row.get("relevance_score"):
+            payload["relevance_score"] = row["relevance_score"]
+        if row.get("summary"):
+            payload["summary"] = row["summary"]
+        if row.get("requirements"):
+            payload["requirements"] = row["requirements"]
+        if row.get("needs_research_lab") is not None:
+            payload["needs_research_lab"] = row["needs_research_lab"]
+        if row.get("analysis_detail"):
+            payload["analysis_detail"] = row["analysis_detail"]
+        if row.get("analyzed_at"):
+            payload["analyzed_at"] = serialize_dt(row["analyzed_at"])
+
+        return payload
