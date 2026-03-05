@@ -12,6 +12,11 @@ export default defineConfig({
   server: {
     port: 5190,
     proxy: {
+      '/api/agent': {
+        target: 'http://localhost:8100',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/agent/, '/api/internal'),
+      },
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,

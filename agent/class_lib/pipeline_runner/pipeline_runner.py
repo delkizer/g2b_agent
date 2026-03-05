@@ -341,12 +341,13 @@ class PipelineRunner:
     # ── EC2 동기화 ─────────────────────────────────────
 
     async def sync_ec2(self, limit: int = 500) -> dict:
-        """로컬 g2b.announcements → EC2 동기화
+        """로컬 g2b.announcements → EC2 동기화 (DB + 파일)
 
         1. fetch_for_ec2_sync() — 미동기화 공고 조회
         2. 20건 청크로 분할
         3. 청크별 HTTP POST /api/announcements/batch
         4. 성공 건 mark_ec2_synced()
+        5. 성공 건 파일 업로드 (attachments + output)
 
         Returns:
             {"status": ..., "synced": N, "failed": N, "errors": [...]}
@@ -362,6 +363,7 @@ class PipelineRunner:
             synced_total = 0
             failed_total = 0
             errors = []
+            all_synced_nos = []
 
             for i in range(0, len(items), self.SEND_BATCH_SIZE):
                 chunk = items[i:i + self.SEND_BATCH_SIZE]
@@ -389,6 +391,7 @@ class PipelineRunner:
                     if synced_nos:
                         await repository.mark_ec2_synced(conn, synced_nos)
                         synced_total += len(synced_nos)
+                        all_synced_nos.extend(synced_nos)
 
                     failed_total += len(error_nos)
                     errors.extend(resp_errors)
@@ -416,6 +419,14 @@ class PipelineRunner:
                             "error": error_msg,
                         })
 
+            # 파일 동기화 (DB 동기화 성공 건만)
+            if all_synced_nos:
+                file_result = await self._sync_files_to_ec2(all_synced_nos)
+                logger.info(
+                    f"파일 동기화: uploaded={file_result['uploaded']}, "
+                    f"skipped={file_result['skipped']}"
+                )
+
             logger.info(
                 f"EC2 동기화 완료: synced={synced_total}, failed={failed_total}"
             )
@@ -436,6 +447,58 @@ class PipelineRunner:
             }
         finally:
             await conn.close()
+
+    async def _sync_files_to_ec2(self, bid_notice_nos: list[str]) -> dict:
+        """로컬 파일(attachments + output) → EC2 파일 업로드 API로 전송
+
+        파일이 없는 공고는 스킵. 업로드 실패는 경고 로그만 (DB 동기화에 영향 없음).
+        """
+        uploaded = 0
+        skipped = 0
+
+        for bid_no in bid_notice_nos:
+            for file_type, base_dir in [
+                ("attachments", ATTACHMENTS_BASE_DIR),
+                ("outputs", self._get_output_base_dir()),
+            ]:
+                source_dir = base_dir / bid_no
+                if not source_dir.is_dir():
+                    continue
+
+                files_to_upload = [
+                    f for f in source_dir.iterdir() if f.is_file()
+                ]
+                if not files_to_upload:
+                    continue
+
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        upload_files = [
+                            ("files", (f.name, f.read_bytes()))
+                            for f in files_to_upload
+                        ]
+                        response = await client.post(
+                            f"{self.config.ec2_api_url}/api/files/{bid_no}/{file_type}",
+                            files=upload_files,
+                            headers={"X-API-Key": self.config.ec2_api_key},
+                        )
+                        response.raise_for_status()
+                    uploaded += len(files_to_upload)
+                    logger.debug(
+                        f"파일 업로드: {bid_no}/{file_type} — {len(files_to_upload)}건"
+                    )
+                except Exception as e:
+                    skipped += len(files_to_upload)
+                    logger.warning(
+                        f"파일 업로드 실패: {bid_no}/{file_type} — {e}"
+                    )
+
+        return {"uploaded": uploaded, "skipped": skipped}
+
+    @staticmethod
+    def _get_output_base_dir() -> Path:
+        """output 디렉토리 경로 (Config의 OneDrive 경로와 동일 위치)"""
+        return ATTACHMENTS_BASE_DIR.parent / "output"
 
     SEND_BATCH_SIZE = 20  # 청크당 최대 건수
 
